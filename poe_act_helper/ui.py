@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .app import Controller
+from .layout_view import LayoutViewer
 from .logwatch import LogTailer, find_log_path
 from .splits import fmt
 from .xp import level_window, xp_multiplier
@@ -38,6 +39,7 @@ class Overlay:
         pos = geo[geo.index("+"):] if "+" in geo else "+40+120"
         self.root.geometry(f"{WIDTH}x10{pos}")
         self._build()
+        self.layout = LayoutViewer(self.root, lambda: self.ctrl.tracker.current, self._flash)
         self.tailer: LogTailer | None = None
         self._open_log(log_path or ctrl.state.get("log_path") or None)
         self._register_hotkeys()
@@ -55,7 +57,7 @@ class Overlay:
         self.lbl_time = tk.Label(head, bg=BG2, fg=FG, font=("Consolas", 11, "bold"))
         self.lbl_time.pack(side="left", padx=4)
         for txt, cmd, tip in (("✕", self.quit, "ปิด"), ("⚙", self.open_settings, "ตั้งค่า"),
-                              ("⏯", self._pause, "หยุด/เดินเวลา"), ("▶", self._next, "ขั้นถัดไป"),
+                              ("⏯", self._pause, "หยุด/เดินเวลา"), ("🗺", self.toggle_layout, "ดู layout แมพ"), ("▶", self._next, "ขั้นถัดไป"),
                               ("◀", self._prev, "ขั้นก่อนหน้า")):
             b = tk.Label(head, text=txt, bg=BG2, fg=DIM, font=(FONT, 11), cursor="hand2", padx=5)
             b.pack(side="right")
@@ -74,6 +76,9 @@ class Overlay:
         self.lbl_zone.pack(fill="x")
         self.lbl_xp = tk.Label(body, bg=BG, fg=DIM, font=(FONT, 9), anchor="w")
         self.lbl_xp.pack(fill="x")
+        self.lbl_layout = tk.Label(body, bg=BG, fg=GOLD, font=(FONT, 8), anchor="w", cursor="hand2")
+        self.lbl_layout.pack(fill="x")
+        self.lbl_layout.bind("<Button-1>", lambda e: self.toggle_layout())
         self.tasks = tk.Frame(body, bg=BG)
         self.tasks.pack(fill="x", pady=(6, 2))
         self.lbl_tips = tk.Label(body, bg=BG, fg=DIM, font=(FONT, 9, "italic"), anchor="w",
@@ -93,6 +98,7 @@ class Overlay:
         r.bind("<Right>", lambda e: self._next())
         r.bind("<Left>", lambda e: self._prev())
         r.bind("<Button-3>", lambda e: self.open_settings())
+        r.bind("m", lambda e: self.toggle_layout())
 
     # ------------------------------------------------------------------ render
     def render(self) -> None:
@@ -102,6 +108,9 @@ class Overlay:
         self.lbl_act.configure(text=f"ACT {step.act}  ·  {t.index + 1}/{len(t.steps)}")
         lvl = f"   (แนะนำ lv {step.lvl})" if step.lvl else ""
         self.lbl_zone.configure(text=f"📍 {step.zone}{lvl}")
+        n = self.layout.count(step)
+        self.lbl_layout.configure(text=f"🗺 มีภาพ layout {n} แบบ — กด 🗺 หรือ Ctrl+Alt+M" if n else "")
+        self.layout.refresh(step)
 
         for w in self.tasks.winfo_children():
             w.destroy()
@@ -186,6 +195,18 @@ class Overlay:
         self.ctrl.prev_step()
         self.render()
 
+    def toggle_layout(self):
+        self.layout.toggle()
+
+    def capture_layout(self):
+        self.layout.capture()
+        self.render()
+
+    def _flash(self, msg: str) -> None:
+        self.lbl_status.configure(text=msg)
+        self.root.after(4000, lambda: self.lbl_status.configure(text=""))
+        self.render()
+
     def _pause(self):
         self.ctrl.timer.toggle_pause()
         self.ctrl.persist()
@@ -236,6 +257,8 @@ class Overlay:
             keyboard.add_hotkey("ctrl+alt+right", lambda: put(self.ctrl.next_step))
             keyboard.add_hotkey("ctrl+alt+left", lambda: put(self.ctrl.prev_step))
             keyboard.add_hotkey("ctrl+alt+p", lambda: put(self.ctrl.timer.toggle_pause))
+            keyboard.add_hotkey("ctrl+alt+m", lambda: put(self.toggle_layout))
+            keyboard.add_hotkey("ctrl+alt+s", lambda: put(self.capture_layout))
         except Exception:
             pass
 

@@ -151,5 +151,29 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(ctrl.state["char_level"], 3)
 
 
+class LayoutTests(unittest.TestCase):
+    def test_find_layouts(self):
+        from poe_act_helper import layouts
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "1_1_3.png").write_bytes(b"x")
+            (d / "1_1_3_b.png").write_bytes(b"x")
+            (d / "1_1_30.png").write_bytes(b"x")          # โซนอื่น ห้ามติดมา
+            (d / "1_1_3" ).mkdir()
+            (d / "1_1_3" / "c.jpg").write_bytes(b"x")
+            (d / "1_1_3" / "notes.txt").write_bytes(b"x")
+            (d / "The Coast (Act 1)").mkdir()
+            (d / "The Coast (Act 1)" / "a.png").write_bytes(b"x")
+            old = layouts.layout_dirs
+            layouts.layout_dirs = lambda: [d]
+            try:
+                got = [p.name for p in layouts.find_layouts("1_1_3", "The Mud Flats", 1)]
+                self.assertEqual(sorted(got), ["1_1_3.png", "1_1_3_b.png", "c.jpg"])
+                self.assertEqual([p.name for p in layouts.find_layouts("1_1_2", "The Coast", 1)], ["a.png"])
+                self.assertEqual(layouts.find_layouts("2_6_2", "The Coast", 6), [])
+            finally:
+                layouts.layout_dirs = old
+
+
 if __name__ == "__main__":
     unittest.main()
