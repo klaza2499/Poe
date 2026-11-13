@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import os
 import subprocess
+import threading
 import sys
 import tkinter as tk
 import webbrowser
@@ -47,9 +48,16 @@ class LayoutViewer:
         self.i = 0
         self._area = None
         self._photo = None
+        self._legend = False
+        self._dl = None
 
     def count(self, step) -> int:
-        return len(layouts.find_layouts(step.area, step.zone, step.act))
+        """จำนวนแบบ layout (ภาพของ Exile-UI หลายภาพนับเป็นแบบเดียวกัน)"""
+        keys = set()
+        for f in layouts.find_layouts(step.area, step.zone, step.act):
+            m = layouts.RE_EXILE_UI.match(f.stem)
+            keys.add(("x", m.group("n")) if m else ("f", f))
+        return len(keys)
 
     # ---------------------------------------------------------------- window
     def toggle(self) -> None:
@@ -75,12 +83,13 @@ class LayoutViewer:
         self.title.pack(fill="x", padx=8, pady=(6, 2))
         self.img = tk.Label(w, bg=BG, fg=DIM, font=(FONT, 10), justify="center", cursor="hand2")
         self.img.pack(padx=8, pady=4)
-        self.img.bind("<Button-1>", lambda e: self.move(1))
+        self.img.bind("<Button-1>", lambda e: self._click())
         bar = tk.Frame(w, bg=BG)
         bar.pack(fill="x", padx=8, pady=(0, 8))
         for txt, cmd in (("◀", lambda: self.move(-1)), ("▶", lambda: self.move(1)),
-                         ("📷 แคปหน้าจอ", self.capture), ("📁 โฟลเดอร์", self.open_dir),
-                         ("🔎 ค้นหาบนเว็บ", self.search), ("✕", self.close)):
+                         ("📷 แคป", self.capture), ("📁 โฟลเดอร์", self.open_dir),
+                         ("⬇ ดาวน์โหลด layout", self.download), ("❓ สัญลักษณ์", self.legend),
+                         ("🔎 เว็บ", self.search), ("✕", self.close)):
             b = tk.Label(bar, text=txt, bg="#1d2027", fg=FG, font=(FONT, 9), padx=8, pady=2,
                          cursor="hand2")
             b.pack(side="left", padx=2)
@@ -107,17 +116,19 @@ class LayoutViewer:
             self.show()
 
     def show(self) -> None:
+        self._legend = False
         step = self.get_step()
         if not self.files:
             self._photo = None
             self.title.configure(text=f"{step.zone} — ยังไม่มีภาพ layout")
             self.img.configure(image="", text=(
-                "วางภาพ (png/jpg) ไว้ในโฟลเดอร์ 📁 แล้วกดเปิดใหม่\n"
+                "กด ⬇ ดาวน์โหลด layout ทุกโซนจาก Exile-UI (ครั้งเดียว)\n"
+                "หรือวางภาพ (png/jpg) ไว้ในโฟลเดอร์ 📁 แล้วกดเปิดใหม่\n"
                 "หรือกด Tab ในเกมเปิดแมพ แล้วกด Ctrl+Alt+S / 📷 เพื่อแคปเก็บไว้\n"
                 f"(ชื่อไฟล์ขึ้นต้นด้วยรหัสโซน: {step.area})"))
             return
         f = self.files[self.i]
-        self.title.configure(text=f"{step.zone}  ·  แบบ {self.i + 1}/{len(self.files)}  ·  {f.name}")
+        self.title.configure(text=f"{step.zone}  ·  {layouts.describe(f)}  ·  ภาพ {self.i + 1}/{len(self.files)}")
         try:
             self._photo = load_photo(f, self.win)
             self.img.configure(image=self._photo, text="")
@@ -154,6 +165,57 @@ class LayoutViewer:
             open_folder(d)
         except Exception:
             self.notify(f"โฟลเดอร์ layout: {d}")
+
+    def _click(self) -> None:
+        if self._legend or not self.files:
+            self.show()
+        else:
+            self.move(1)
+
+    def legend(self) -> None:
+        p = layouts.legend_path()
+        if not p or self.win is None:
+            self.notify("❓ ต้องดาวน์โหลด layout ก่อน (ปุ่ม ⬇)")
+            return
+        self._legend = True
+        self.title.configure(text="ความหมายสัญลักษณ์ในภาพ (คลิกภาพเพื่อกลับ)")
+        try:
+            self._photo = load_photo(p, self.win)
+            self.img.configure(image=self._photo, text="")
+        except Exception as e:
+            self.img.configure(image="", text=str(e))
+
+    def download(self) -> None:
+        if getattr(self, "_dl", None):
+            return
+        self._dl = {"n": 0, "total": 0, "result": None}
+
+        def work():
+            try:
+                self._dl["result"] = layouts.download_exile_ui(
+                    lambda n, t: self._dl.update(n=n, total=t))
+            except Exception as e:
+                self._dl["result"] = e
+
+        threading.Thread(target=work, daemon=True).start()
+        self._poll_download()
+
+    def _poll_download(self) -> None:
+        st = self._dl
+        res = st["result"]
+        if res is None:
+            if self.win is not None:
+                self.title.configure(text=f"⬇ กำลังดาวน์โหลด layout… {st['n']}/{st['total'] or '?'}")
+            self.root.after(300, self._poll_download)
+            return
+        self._dl = None
+        if isinstance(res, Exception):
+            self.notify(f"⬇ ดาวน์โหลดไม่สำเร็จ: {res}")
+        else:
+            ok, fail = res
+            self.notify(f"⬇ ดาวน์โหลด layout เสร็จ ({ok} ไฟล์ใหม่" + (f", ล้มเหลว {fail} — กดอีกครั้งเพื่อลองใหม่)" if fail else ")"))
+        if self.win is not None:
+            self.refresh(self.get_step(), force=True)
 
     def search(self) -> None:
         step = self.get_step()

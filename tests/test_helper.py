@@ -175,5 +175,29 @@ class LayoutTests(unittest.TestCase):
                 layouts.layout_dirs = old
 
 
+# โซนที่ Exile-UI ไม่มีภาพ (ทางตรง/เล็ก/ไม่ใช่โซนสุ่ม)
+NO_LAYOUT = {"1_1_1", "1_2_2a", "2_8_10", "Labyrinth_Airlock"}
+
+
+class ExileUiLayoutTests(unittest.TestCase):
+    def test_manifest_covers_every_route_zone(self):
+        import json
+        from poe_act_helper import layouts
+        from poe_act_helper.route import is_town
+        man = json.loads(layouts.MANIFEST.read_text(encoding="utf-8"))
+        areas = {f.split(" ")[0] for f in man["files"]}
+        for s in load_steps(Options(league_start=True, library=True)):
+            if not is_town(s.area) and s.area not in NO_LAYOUT:
+                self.assertIn(s.area, areas, s.zone)
+
+    def test_describe_and_order(self):
+        from poe_act_helper import layouts
+        self.assertEqual(layouts.describe(Path("1_1_2 3.jpg")), "แบบ 3 · เบาะแสบน minimap")
+        self.assertEqual(layouts.describe(Path("1_1_2 3_2.jpg")), "แบบ 3 · แผนที่ 2")
+        names = ["1_1_2 10.jpg", "1_1_2 2.jpg", "1_1_2 1_1.jpg", "1_1_2 1.jpg"]
+        got = [p.name for p in sorted(map(Path, names), key=layouts.natural_key)]
+        self.assertEqual(got, ["1_1_2 1.jpg", "1_1_2 1_1.jpg", "1_1_2 2.jpg", "1_1_2 10.jpg"])
+
+
 if __name__ == "__main__":
     unittest.main()

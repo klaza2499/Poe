@@ -109,7 +109,7 @@ class Overlay:
         lvl = f"   (แนะนำ lv {step.lvl})" if step.lvl else ""
         self.lbl_zone.configure(text=f"📍 {step.zone}{lvl}")
         n = self.layout.count(step)
-        self.lbl_layout.configure(text=f"🗺 มีภาพ layout {n} แบบ — กด 🗺 หรือ Ctrl+Alt+M" if n else "")
+        self.lbl_layout.configure(text=f"🗺 layout {n} แบบ — กด 🗺 หรือ M เพื่อดู" if n else "🗺 กด 🗺 เพื่อดู/ดาวน์โหลด layout")
         self.layout.refresh(step)
 
         for w in self.tasks.winfo_children():
