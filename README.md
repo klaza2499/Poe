@@ -53,6 +53,10 @@ Overlay ช่วยวิ่ง Act 1–10 ใน **Path of Exile 1** ให้
 
 > `run.bat` ติดตั้ง Pillow (ใช้เปิดภาพ jpg/แคปหน้าจอ) และ keyboard (ปุ่มลัดทั่วระบบ) ให้อัตโนมัติตอนเปิดครั้งแรก
 
+## ใช้ Exile-UI เป็นภาษาไทย
+
+ถ้าใช้ [Exile-UI](https://github.com/Lailloken/Exile-UI) ร่วมด้วย มีแพ็กภาษาไทยในโฟลเดอร์ [`exile-ui-thai/`](exile-ui-thai/README.md) — ลากโฟลเดอร์ Exile-UI มาวางบน `install.bat` จบ
+
 ## ทริควิ่งให้เร็ว
 
 - ทำ **รองเท้า +10% Movement Speed** ใน Act 1: ขาย Quicksilver Flask + Orb of Augmentation + รองเท้าธรรมดา
