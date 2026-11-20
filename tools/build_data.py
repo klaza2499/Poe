@@ -376,11 +376,13 @@ def build_misc(src):
     misc["pantheons"] = lualit.parse_return_table(read(os.path.join(D, "Pantheons.lua")))
     for fn, key in (("Minions.lua", "minions"), ("Spectres.lua", "spectres")):
         mins = lualit.parse_assignments(read(os.path.join(D, fn)), "minions")
-        misc[key] = {k: {f: v.get(f) for f in ("name", "life", "energyShield", "armour", "evasion",
-                                                  "fireResist", "coldResist", "lightningResist", "chaosResist",
-                                                  "damage", "damageSpread", "attackTime", "attackRange",
-                                                  "skillList", "monsterTags", "accuracy") if v.get(f) is not None}
+        misc[key] = {k: {f: x for f, x in v.items() if isinstance(f, str) and f != "modList"
+                         and not isinstance(x, lualit.Raw) and x is not None}
                      for k, v in mins.items() if isinstance(v, dict)}
+        for k, v in mins.items():
+            if isinstance(v, dict) and isinstance(v.get("modList"), list):
+                ml = [luaexpr.clean(_conv(m)) for m in v["modList"]]
+                misc[key][k]["modList"] = [m for m in ml if isinstance(m, dict) and m.get("k")]
     for fn, key in (("Bosses.lua", "bosses"), ("BossSkills.lua", "bossSkills")):
         try:
             txt = read(os.path.join(D, fn))
@@ -447,7 +449,8 @@ def build_calcdata(src):
     consts = {"flags": flags, "statMap": {k: v for k, v in statmap.items() if v}}
     mtxt = read(os.path.join(D, "Misc.lua"))
     for name in ("gameConstants", "characterConstants", "monsterConstants", "monsterEvasionTable",
-                 "monsterArmourTable", "monsterLifeTable", "monsterDamageTable", "monsterAccuracyTable",
+                 "monsterArmourTable", "monsterLifeTable", "monsterLifeTable2", "monsterLifeTable3",
+                 "monsterDamageTable", "monsterAccuracyTable", "monsterAllyLifeTable", "monsterAllyDamageTable",
                  "monsterAilmentThresholdTable"):
         m = re.search(rf"^data\.{name}\s*=\s*", mtxt, re.M)
         if m:
@@ -621,6 +624,7 @@ def main():
     ap.add_argument("src", help="path to PathOfBuilding/src")
     ap.add_argument("--tree", default="3_30")
     a = ap.parse_args()
+    luaexpr.load_flags(read(os.path.join(a.src, "Data", "Global.lua")))
     print("tree", a.tree)
     build_tree(a.src, a.tree)
     print("gems")

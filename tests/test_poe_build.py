@@ -215,3 +215,44 @@ def _id(name, asc=None):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdvancedCalcTests(unittest.TestCase):
+    def test_minions(self):
+        api.new_build("M1", "Witch", "Necromancer", 90)
+        api.add_skill_group("M1", ["Summon Raging Spirit"], "Body Armour")
+        m = api.calc_build("M1")["offence"]["minion"]
+        self.assertGreater(m["dps_per_minion"], 0)
+        self.assertGreater(m["life"], 0)
+        r = api.what_if("M1", add_gems={"1": ["Minion Damage"]})
+        self.assertGreater(r["changes"]["total_dps"]["change"], 0)
+
+    def test_triggers(self):
+        api.new_build("T7", "Witch", "Elementalist", 90)
+        api.add_skill_group("T7", ["Arc", "Cyclone", "Cast While Channelling"], "Body Armour")
+        o = api.calc_build("T7")["offence"]
+        self.assertEqual(o["skill"], "Arc")
+        self.assertAlmostEqual(o["trigger"]["rate"], 1 / 0.32, places=2)
+        api.add_skill_group("T7", ["Fireball", "Cast when Damage Taken"], "Gloves", main=True)
+        o = api.calc_build("T7")["offence"]
+        self.assertIsNone(o["trigger"]["rate"])
+        self.assertGreater(o["average_hit"], 0)
+
+    def test_cluster_jewel(self):
+        api.new_build("CJ", "Witch", "Elementalist", 90)
+        api.add_skill_group("CJ", ["Fireball"], "Body Armour")
+        sock = next(k for k, v in data.nodes().items() if v["type"] == "jewel" and v.get("clusterSocket")
+                    and not v.get("isClusterInner") and v["clusterSocket"].get("size") == 2)
+        api.allocate("CJ", [sock])
+        before = api.calc_build("CJ")["offence"]["total_dps"]
+        api.equip_text("CJ", str(sock), "Rarity: RARE\nX\nLarge Cluster Jewel\nImplicits: 3\nAdds 8 Passive Skills\n"
+                       "2 Added Passive Skills are Jewel Sockets\nAdded Small Passive Skills grant: 12% increased Fire Damage")
+        r = api.calc_build("CJ")
+        self.assertGreater(r["offence"]["total_dps"], before)
+        self.assertEqual(r["cluster_points"], 8)
+
+    def test_custom_mods(self):
+        api.new_build("CM", "Marauder")
+        life = api.calc_build("CM")["defence"]["life"]
+        api.set_config("CM", {"customMods": "+100 to maximum Life"})
+        self.assertGreater(api.calc_build("CM")["defence"]["life"], life + 99)

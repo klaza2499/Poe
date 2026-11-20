@@ -57,6 +57,8 @@ canvas{display:block;width:100%;height:100%;cursor:grab}
   <button onclick="newBuild()">＋ ใหม่</button>
   <span class="muted">Lv</span><input id="lvl" type="number" min="1" max="100" style="width:64px" onchange="setLevel()">
   <select id="ascSel" onchange="setAsc()"></select>
+  <select id="loSel" title="Loadout (ชุดต้นไม้/ไอเทม/เจม)" onchange="switchLo(this.value)"></select>
+  <button onclick="saveLo()" title="บันทึก loadout">💾</button>
   <button onclick="exportCode()">📤 Export PoB</button>
   <button onclick="importCode()">📥 Import</button>
   <span class="sp"></span>
@@ -91,6 +93,8 @@ async function refreshList(sel){const r=await call('list_builds',{});const bs=$(
   if(sel)bs.value=sel;}
 async function loadBuild(name){if(!name)return;const r=await (await fetch('/api/build?name='+encodeURIComponent(name))).json();if(r.error)return;
   cur=name;B=r.raw;S=r.summary;mtime=r.mtime;try{localStorage.setItem('poeb.cur',name)}catch(e){}
+  const lo=$('#loSel');const los=Object.keys(B.loadouts||{});lo.style.display=los.length?'':'none';
+  lo.innerHTML=los.map(n=>`<option ${n===B.activeLoadout?'selected':''}>${esc(n)}</option>`).join('');
   $('#lvl').value=B.level;$('#ascSel').value=B.class+'|'+(B.ascendancy||'');
   if(!loadBuild.centered){centerOn(classStart());loadBuild.centered=true}
   render();draw();}
@@ -172,6 +176,8 @@ function render(){const p=$('#pane');if(!B){p.innerHTML='<div class="card">ย�
     <div class="grid"><div class="stat"><b style="color:var(--gold2)">${f(o.total_dps)}</b><span>Total DPS</span></div><div class="stat"><b>${f(o.hit_dps)}</b><span>Hit DPS</span></div><div class="stat"><b>${f(o.average_hit)}</b><span>Average hit</span></div>
     <div class="stat"><b>${o.uses_per_second??'—'}</b><span>ครั้ง/วินาที</span></div><div class="stat"><b>${o.crit_chance??'—'}%</b><span>Crit · x${o.crit_multiplier??''}%</span></div><div class="stat"><b>${o.hit_chance??'—'}%</b><span>Hit chance</span></div></div>
     <div class="row">${o.dot_dps?`<span class="tag">DoT ${f(o.dot_dps)}</span>`:''}${o.ignite?`<span class="tag">Ignite ${f(o.ignite.dps)}</span>`:''}${o.bleed?`<span class="tag">Bleed ${f(o.bleed.dps)}</span>`:''}${o.poison?`<span class="tag">Poison ${f(o.poison.dps)} (${o.poison.stacks} stacks)</span>`:''}${o.cost&&o.cost.Mana?`<span class="tag">Mana ${o.cost.Mana}</span>`:''}</div>
+    ${o.minion?`<div class="card" style="margin:6px 0"><h3>🧟 ${esc(o.minion.name)} x${o.minion.count} (Lv${o.minion.level}) — ${esc(o.minion.skill||'')}</h3><div class="grid"><div class="stat"><b style="color:var(--gold2)">${f(o.minion.total_dps)}</b><span>DPS รวมทุกตัว</span></div><div class="stat"><b>${f(o.minion.dps_per_minion)}</b><span>DPS ต่อตัว</span></div><div class="stat"><b>${f(o.minion.life)}</b><span>Life มินเนี่ยน</span></div></div></div>`:''}
+    ${o.trigger?`<div class="muted">⚡ trigger โดย ${esc(o.trigger.by)}: ${o.trigger.rate!=null?o.trigger.rate+' ครั้ง/วินาที':esc(o.trigger.note||'')}${o.trigger.source?' · '+esc(o.trigger.source):''}</div>`:''}
     ${o.enemy?`<div class="muted">ศัตรู: ${esc(o.enemy.boss)} Lv${o.enemy.level} · res ${Object.entries(o.enemy.resist).map(([k,v])=>k[0]+':'+v+'%').join(' ')}${o.enemy.curses&&o.enemy.curses.length?' · curse: '+esc(o.enemy.curses.join(', ')):''}</div>`:''}
     ${(S.buffs||[]).length?`<div class="muted">บัฟ: ${esc(S.buffs.join(', '))}</div>`:''}
     ${(S.calc_notes||[]).map(n=>`<div class="muted">ℹ ${esc(n)}</div>`).join('')}${o.note?`<div class="muted">ℹ ${esc(o.note)}</div>`:''}</div>
@@ -252,6 +258,8 @@ function closeModal(){$('#modal').style.display='none'}
 $('#modal').onclick=e=>{if(e.target.id==='modal')closeModal()};
 async function newBuild(){modal(`<h3>สร้างบิ้วใหม่</h3><div class="row"><input id="nbn" placeholder="ชื่อบิ้ว" style="flex:1"></div><div class="row"><select id="nbc">${$('#ascSel').innerHTML}</select><span class="muted">Lv</span><input id="nbl" type="number" value="90" style="width:70px"></div><div class="row"><button class="pri" id="nbok">สร้าง</button><button onclick="closeModal()">ยกเลิก</button></div>`);
   $('#nbok').onclick=async()=>{const n=$('#nbn').value.trim();if(!n)return;const[c,a]=$('#nbc').value.split('|');await call('new_build',{name:n,class_name:c,ascendancy:a||null,level:+$('#nbl').value});closeModal();loadBuild.centered=false;await refreshList(n);loadBuild(n)}}
+async function switchLo(n){await call('switch_loadout',{name:cur,loadout:n});loadBuild(cur)}
+async function saveLo(){const n=prompt('ชื่อ loadout (เช่น Leveling / Mapping / Bossing)',B.activeLoadout||'Default');if(!n)return;await call('save_loadout',{name:cur,loadout:n});loadBuild(cur)}
 async function setLevel(){await call('set_build',{name:cur,level:+$('#lvl').value});loadBuild(cur)}
 async function setAsc(){const[c,a]=$('#ascSel').value.split('|');await call('set_build',{name:cur,class_name:c,ascendancy:a||null});loadBuild(cur)}
 async function exportCode(){const r=await call('export_pob',{name:cur});modal(`<h3>Path of Building code</h3><p class="muted">PoB → Import/Export Build → วางโค้ด → Import</p><textarea id="ec" readonly>${esc(r.code)}</textarea><div class="row"><button class="pri" onclick="navigator.clipboard.writeText($('#ec').value);this.textContent='คัดลอกแล้ว ✓'">คัดลอก</button><button onclick="closeModal()">ปิด</button></div>`)}

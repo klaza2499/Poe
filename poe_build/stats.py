@@ -101,8 +101,10 @@ def compute(build) -> dict:
     spec = build.spec()
     pts = spec.counts()
     avail = points_available(level, build.bandit)
-    if pts["passives"] > avail:
-        problems.append(f"{pts['passives']} passive points used but only {avail} available at level {level}")
+    used = pts["passives"] + res.get("cluster_points", 0)
+    if used > avail:
+        extra = f" (incl. {res['cluster_points']} on cluster jewels)" if res.get("cluster_points") else ""
+        problems.append(f"{used} passive points used{extra} but only {avail} available at level {level}")
     if pts["ascendancy"] > 8:
         problems.append(f"{pts['ascendancy']} ascendancy points used (max 8)")
     for el in ("Fire", "Cold", "Lightning"):

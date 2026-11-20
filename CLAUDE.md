@@ -30,6 +30,8 @@ python -m poe_build set_config --name "..." --values '{"usePowerCharges": true, 
 python -m poe_build set_gem --name "..." --group 1 --gem "Spell Echo" --level 21 --quality 20
 python -m poe_build inspect_item --unique "Kaom's Heart"    # how each mod line is parsed
 python -m poe_build import_character --account "Name#1234" --character "MyChar"
+python -m poe_build save_loadout --name "..." --loadout "Leveling"   # also switch_loadout / list_loadouts
+python -m poe_build set_config --name "..." --values '{"customMods": "+100 to maximum Life\n10% more Damage"}'  # PoB custom modifiers
 python -m poe_build export_pob --name "..."                 # code to import into Path of Building
 python -m poe_build call allocate '{"name":"...","nodes":["Acrobatics"]}'   # JSON form of any call
 ```
@@ -39,7 +41,7 @@ Workflow: search → `new_build` → `allocate` (the shortest path is found for 
 Rules:
 - Never guess names. Look them up with the search tools, because names must match the data exactly.
 - For rares, pick mods from `search_mods` on that base so the item could actually roll.
-- DPS/defence come from `poe_build/calc.py`, which uses PoB's own data and formulas. It does not model minion DPS, trigger rates, cluster/timeless jewel trees or special-case uniques. `unparsed_mods` / `notes` in the output tell you what was skipped. Say so when it matters, and suggest checking the `export_pob` code in Path of Building.
+- DPS/defence come from `poe_build/calc.py`, which uses PoB's own data and formulas (checked against PoB's spec tests in `tests/test_pob_reference.py`). Minions show up under `offence.minion`, and triggered spells under `offence.trigger`; trigger rates are approximate. Cluster jewels count all of their added passives. Timeless jewels and the ~120 skills/uniques that PoB handles with special code are only partly modelled. `unparsed_mods` / `notes` in the output tell you what was skipped. Say so when it matters, and suggest checking the `export_pob` code in Path of Building.
 - Default enemy is a Pinnacle boss (50% elemental / 30% chaos res, level 84), the same as PoB.
 - Builds are stored as JSON in `builds/`. The web planner (`python -m poe_build web`) refreshes live while you edit.
 

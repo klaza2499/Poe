@@ -818,6 +818,9 @@ class Calculator:
         for nid, text in b.jewels.items():
             if nid not in spec.alloc:
                 continue
+            if "Cluster Jewel" in itemsmod.parse_item(text)["base"]:
+                self.apply_cluster_jewel(text, nid)
+                continue
             it, base, mods, _, _, unp = parse_item_mods(text, "Jewel")
             for u in unp:
                 self.unparsed.append(("jewel", str(nid), u))
@@ -852,6 +855,67 @@ class Calculator:
             db.new("BlockChance", "BASE", self.shield_block, "Shield")
         db.multipliers["Level"] = level
 
+    # -------------------------------------------------------------- cluster jewels
+    def apply_cluster_jewel(self, text, nid):
+        """Cluster jewel: assume every passive it adds is allocated (how almost all builds use them)."""
+        db = self.player.moddb
+        it = itemsmod.parse_item(text)
+        size = it["base"].split()[0]
+        info = data.misc()["clusterJewels"]["jewels"].get(it["base"], {})
+        count = info.get("maxNodes", 0)
+        notables, small, sockets, other = [], [], 0, []
+        for line in itemsmod.active_mod_lines(it):
+            line = modparse.roll(line)
+            low = line.lower()
+            if low.startswith("added small passive skills grant: ") or low.startswith("added small passive skills also grant: "):
+                small.append(line.split(": ", 1)[1])
+                continue
+            r = modparse.parse_line(line)
+            if r and r[0]["name"] == "ClusterJewelNotable":
+                notables.append(r[0]["value"])
+            elif r and r[0]["name"] == "JewelData" and isinstance(r[0]["value"], dict) and \
+                    r[0]["value"].get("key") == "clusterJewelNodeCount":
+                count = r[0]["value"]["value"]
+            elif r and r[0]["name"] == "JewelData" and isinstance(r[0]["value"], dict) and \
+                    r[0]["value"].get("key") == "clusterJewelSocketCount":
+                sockets = r[0]["value"]["value"]
+            elif r and r[0]["name"] in ("JewelData", "ClusterJewelSkill"):
+                continue
+            elif r is None:
+                m = __import__("re").match(r"^(\d+) Added Passive Skills? (?:are|is a) Jewel Sockets?$", line)
+                if m:
+                    sockets = int(m.group(1))
+                else:
+                    self.unparsed.append(("cluster", str(nid), line))
+            else:
+                other += r
+        db.add_list(other, f"Cluster:{it['name'] or it['base']}")
+        name_to_node = {n["name"]: (k, n) for k, n in data.nodes().items() if n["type"] in ("notable", "keystone") and not n.get("adj")}
+        for nm in notables:
+            k_n = name_to_node.get(nm)
+            if not k_n:
+                self.unparsed.append(("cluster", str(nid), f"notable {nm}"))
+                continue
+            for st in k_n[1].get("stats", []):
+                r = modparse.parse_line(st.replace("\n", " "))
+                if r is None:
+                    self.unparsed.append(("cluster", nm, st))
+                else:
+                    db.add_list(r, f"Cluster notable:{nm}")
+        n_small = max(0, count - len(notables) - sockets)
+        for line in small:
+            r = modparse.parse_line(line)
+            if r is None:
+                self.unparsed.append(("cluster", "small passive", line))
+                continue
+            for m in r:
+                if isinstance(m.get("value"), (int, float)) and not isinstance(m.get("value"), bool):
+                    m = dict(m, value=m["value"] * n_small)
+                db.add(m, f"Cluster small passives x{n_small}")
+        self.cluster_points = getattr(self, "cluster_points", 0) + count
+        self.notes.append(f"{size} cluster jewel in socket {nid}: assumed all {count} added passives allocated "
+                          f"({len(notables)} notables, {n_small} small).")
+
     # -------------------------------------------------------------- skills
     def build_skill(self, group, gem_index, main_cfg=False):
         """Create an active skill from a socket group's active gem."""
@@ -873,9 +937,16 @@ class Calculator:
         for i, sg in enumerate(gems):
             if i == gem_index or not sg.get("enabled", True):
                 continue
-            sd = data.find_gem(sg["name"])
-            if sd and sd["support"]:
-                supports.append((sd, sg.get("level", 20), sg.get("quality", 0)))
+            sd = sg.get("_gd") or data.find_gem(sg["name"])
+            if not sd:
+                continue
+            lv_q = (sg.get("level", 20), sg.get("quality", 0))
+            if sd["support"]:
+                supports.append((sd, *lv_q))
+            sec = sd.get("secondarySkillId")
+            if sec and (skills_data().get(sec) or {}).get("support"):
+                # e.g. Cast On Critical Strike's triggered-spell part, Spellslinger / Arcanist Brand
+                supports.append(({**sd, "skillId": sec, "support": True}, *lv_q))
         # item-granted supports (e.g. "Socketed Gems are Supported by Level 20 X")
         for v in db.list({"slotName": slot, "gem": gd}, "ExtraSupport"):
             if isinstance(v, dict) and v.get("skillId"):
@@ -888,6 +959,7 @@ class Calculator:
         from .skills import support_fits
         active_view = {"name": gd["name"], "skillTypes": sorted(types)}
         used = []
+        trig = None
         for sd, lv, q in supports:
             ssk = skills_data().get(sd.get("skillId"))
             if not ssk:
@@ -897,6 +969,8 @@ class Calculator:
                 used.append((sd, ssk, lv, q))
                 types |= set(ssk.get("addSkillTypes", []))
                 active_view["skillTypes"] = sorted(types)
+                if ssk.get("isTrigger") or "Triggered" in (ssk.get("addSkillTypes") or []):
+                    trig = (ssk, lv, q)
         mana_mult = 100.0
         sup_mods = []
         rows = []
@@ -924,7 +998,7 @@ class Calculator:
                 mana_mult *= (100 + srow["manaMultiplier"]) / 100
         skill = {"name": gd["name"], "gem": gd, "sk": sk, "skillId": gd["skillId"], "types": types, "slot": slot,
                  "level": level, "quality": quality, "row": row, "stats": stats, "supports": [u[1]["name"] for u in used],
-                 "manaMult": mana_mult}
+                 "manaMult": mana_mult, "trigger": trig, "group": group}
         # split global effects (buffs/curses/auras) from skill-local mods
         local, glob = [], []
         for m in mods:
@@ -1038,12 +1112,74 @@ class Calculator:
                 "skillDist": self.cfg_in.get("projectileDistance"),
                 "skillCond": {}}
 
+    # -------------------------------------------------------------- triggers
+    def trigger_rate(self, skill, sdb, cfg):
+        """Approximate PoB trigger maths: min(source rate, 1 / adjusted cooldown) shared between triggered spells."""
+        ssk, lv, q = skill["trigger"]
+        stats, row = gem_stats(ssk, lv, q)
+        # the gem's other granted effect (e.g. Cast while Channelling's channel part) holds trigger timings
+        for gd in data.gems().values():
+            if gd.get("secondarySkillId") == skills_id(ssk) and gd.get("skillId") in skills_data():
+                pst, prow = gem_stats(skills_data()[gd["skillId"]], lv, q)
+                stats = {**pst, **stats}
+                break
+        cdr = 1 + sdb.sum("INC", cfg, "CooldownRecovery") / 100
+        cd = (row.get("cooldown") or skill["data"].get("cooldown") or 0) / cdr if (row.get("cooldown") or skill["data"].get("cooldown")) else 0
+        # PoB rounds trigger cooldowns up to server ticks (33 ms)
+        if cd:
+            tick = 0.033
+            cd = math.ceil(cd / tick - 1e-9) * tick
+        info = {"by": ssk["name"], "cooldown": rnd(cd, 3) if cd else None}
+        group = skill.get("group") or {}
+        triggered_in_group = 0
+        attacks = []
+        for i, g in enumerate(group.get("gems", [])):
+            gd = g.get("_gd") or data.find_gem(g["name"])
+            if not gd or gd["support"] or not g.get("enabled", True):
+                continue
+            sk2 = skills_data().get(gd["skillId"], {})
+            if "Attack" in sk2.get("skillTypes", []):
+                attacks.append(i)
+            elif "Spell" in sk2.get("skillTypes", []):
+                triggered_in_group += 1
+        triggered_in_group = max(1, triggered_in_group)
+        source = None
+        if "cast_spell_on_linked_attack_crit" in stats or "Crit" in ssk["name"]:
+            if attacks:
+                src = self.build_skill(group, attacks[0])
+                src["trigger"] = None
+                o = self.calc_offence_core(src)
+                source = o["speed"] * o["crit_chance"] / 100 * o["hit_chance"] / 100
+                info["source"] = f"{src['name']} crits: {rnd(o['speed'], 2)}/s x {rnd(o['crit_chance'], 1)}% crit"
+            else:
+                info["note"] = "no linked attack to trigger from"
+                source = 0
+        elif skill["data"].get("triggerTime") or stats.get("cast_while_channelling_time_ms"):
+            tt = skill["data"].get("triggerTime") or stats["cast_while_channelling_time_ms"] / 1000
+            source = 1 / tt if tt else None
+            info["source"] = f"every {tt:.2f}s while channelling"
+        elif "base_skill_show_average_damage_instead_of_dps" in stats or "cast_on_damage_taken_threshold" in stats:
+            info["note"] = "triggered by taking damage / dying: average hit only, no sustained DPS"
+            info["rate"] = None
+            return info
+        rate_cap = 1 / cd if cd else None
+        cands = [x for x in (source, rate_cap) if x is not None]
+        rate = min(cands) if cands else None
+        if rate is not None:
+            rate /= triggered_in_group
+        info["rate"] = rnd(rate, 3) if rate is not None else None
+        if triggered_in_group > 1:
+            info["shared_between"] = triggered_in_group
+        self.notes.append(f"{skill['name']} is triggered by {ssk['name']} (~{info['rate']}/s, approximate trigger maths).")
+        return info
+
     # -------------------------------------------------------------- buffs
     def apply_buffs(self, main_skill):
         b = self.build
         db, edb = self.player.moddb, self.enemy.moddb
         curses = []
         self.buffs = []
+        self.ally_buffs = []
         reserved = {"Mana": 0.0, "Life": 0.0, "ManaPercent": 0.0, "LifePercent": 0.0}
         for gi, grp in enumerate(b.skill_groups, 1):
             if not grp.get("enabled", True):
@@ -1094,6 +1230,8 @@ class Calculator:
                         nm["value"] = nm["value"] * mult
                     nm["source"] = "Buff:" + sk["name"]
                     tgt.add(nm)
+                    if gt.get("effectType") == "Aura" and tgt is db:
+                        self.ally_buffs.append(nm)
                 self.buffs.append(f"{sk['name']} (+{inc:.0f}% effect)")
         limit = int(db.sum("BASE", None, "EnemyCurseLimit"))
         self.curses = []
@@ -1389,6 +1527,13 @@ class Calculator:
         taken = (1 + (taken_inc + shock) / 100) * taken_more
         return (1 - eff_res / 100) * taken, eff_res
 
+    def calc_offence_core(self, skill):
+        notes = list(self.notes)
+        o = self.calc_offence(skill)
+        self.notes = notes
+        return {"speed": o.get("uses_per_second") or 0, "crit_chance": o.get("crit_chance") or 0,
+                "hit_chance": o.get("hit_chance") or 0}
+
     def calc_offence(self, skill):
         out = {}
         if not skill:
@@ -1532,6 +1677,14 @@ class Calculator:
         else:
             main = results[0]
             comb = {k: main[k] for k in ("average_hit", "crit_chance", "hit_chance", "speed", "dps")}
+        if skill.get("trigger"):
+            tr = self.trigger_rate(skill, sdb, cfg)
+            out["trigger"] = tr
+            if tr.get("rate") is not None:
+                comb["speed"] = tr["rate"]
+                comb["dps"] = comb["average_hit"] * tr["rate"] * comb["hit_chance"] / 100
+            else:
+                comb["dps"] = 0
         hit_dps = comb["dps"] if "hit" in fl else 0
         out.update({
             "hit_dps": rnd(hit_dps, 1),
@@ -1679,7 +1832,147 @@ class Calculator:
         self.calc_defence()
         skill = self.build_skill(main[0], main[1]) if main else None
         off = self.calc_offence(skill) if skill else {"note": "no main skill selected"}
+        if skill and minion_types(skill):
+            try:
+                mc = MinionCalculator(self, skill, main[0])
+                off["minion"] = mc.result()
+                if not off.get("total_dps"):
+                    off["total_dps"] = off["minion"]["total_dps"]
+                    off.pop("note", None)
+                self.notes = [n for n in self.notes if not n.startswith("Minion damage")]
+            except Exception as ex:  # keep player results even if a minion type is unusual
+                self.notes.append(f"Minion calc failed: {type(ex).__name__}: {ex}")
         return self.player.output, off
+
+
+@functools.lru_cache(maxsize=None)
+def _skill_ids():
+    return {id(v): k for k, v in skills_data().items()}
+
+
+def skills_id(sk):
+    return _skill_ids().get(id(sk))
+
+
+# ======================================================================== minions
+def minion_types(skill):
+    lst = skill["sk"].get("minionList") or []
+    if isinstance(lst, dict):
+        lst = list(lst.values())
+    return [m for m in lst if isinstance(m, str)]
+
+
+def minion_data(mtype):
+    m = data.misc()
+    return m["minions"].get(mtype) or m["spectres"].get(mtype)
+
+
+class MinionCalculator(Calculator):
+    """Runs the offence/defence code for a minion actor (PoB: env.minion)."""
+
+    def __init__(self, parent, summon, group):
+        self.parent = parent
+        self.build = parent.build
+        self.summon = summon
+        self.group = group
+        self.notes = []
+        self.unparsed = []
+        cfg = parent.cfg_in
+        types = minion_types(summon)
+        want = cfg.get("skillMinion") or group.get("minion")
+        self.mtype = want if want in types else types[0]
+        self.md = minion_data(self.mtype) or {}
+
+    def setup(self):
+        p = self.parent
+        md = self.md
+        self.cfg_in, self.bd = p.cfg_in, p.bd
+        self.enemy_armour, self.enemy_evasion = p.enemy_armour, p.enemy_evasion
+        self.enemy = p.enemy
+        self.player = Actor("minion")
+        self.player.other = p.enemy
+        db = self.player.moddb
+        db.conditions.update({"Combat": True, "Effective": True})
+        lvl = self.summon["stats"].get("base_display_minion_actor_level") or self.summon["row"].get("levelRequirement") or 1
+        lvl = int(min(max(lvl, 1), 100))
+        self.level = lvl
+        db.multipliers["Level"] = lvl
+        c = consts()
+        is_spectre = self.mtype in data.misc()["spectres"]
+        life_tab = (c["monsterLifeTable2"] if md.get("lifeScaling") == "AltLife1" else
+                    c["monsterLifeTable3"] if md.get("lifeScaling") == "AltLife2" else
+                    c["monsterLifeTable"] if is_spectre else c["monsterAllyLifeTable"])
+        db.new("Life", "BASE", math.floor(life_tab[lvl - 1] * md.get("life", 1)))
+        if md.get("energyShield"):
+            db.new("EnergyShield", "BASE", math.floor(c["monsterAllyLifeTable"][lvl - 1] * md.get("life", 1) * md["energyShield"]))
+        db.new("Armour", "BASE", rnd(c["monsterArmourTable"][lvl - 1] * (md.get("armour") or 1)))
+        db.new("Evasion", "BASE", rnd(c["monsterEvasionTable"][lvl - 1] * (md.get("evasion") or 1)))
+        db.new("CannotBeEvaded", "FLAG", True, "Minion attacks always hit")
+        mc = c.get("monsterConstants", {})
+        db.new("CritMultiplier", "BASE", mc.get("base_critical_strike_multiplier", 130) - 100)
+        db.new("DotMultiplier", "BASE", mc.get("critical_ailment_dot_multiplier_+", 50), "Base", 0, 0, {"type": "Condition", "var": "CriticalStrike"})
+        for r in ("Fire", "Cold", "Lightning", "Chaos"):
+            db.new(r + "Resist", "BASE", md.get(r.lower() + "Resist", 0))
+            db.new(r + "ResistMax", "BASE", 75)
+        db.new("ProjectileCount", "BASE", 1)
+        for m in md.get("modList") or []:
+            if m.get("k") == "mod":
+                db.add(norm_mod(m, "Minion base"))
+        # player's "Minions have/deal ..." modifiers (+ those from the summon gem and its supports)
+        for v in self.summon["db"].list(p._cfg(self.summon, "buff"), "MinionModifier"):
+            if isinstance(v, dict) and isinstance(v.get("mod"), dict):
+                db.add(norm_mod(v["mod"], "Player:MinionModifier"))
+        for m in getattr(p, "ally_buffs", []):
+            db.add(dict(m))
+        attack_time = md.get("attackTime", 1)
+        tab = c["monsterDamageTable"] if (is_spectre or md.get("hostile")) else c["monsterAllyDamageTable"]
+        dmg = tab[lvl - 1] * md.get("damage", 1)
+        if not md.get("baseDamageIgnoresAttackSpeed"):
+            dmg *= attack_time
+        spread = md.get("damageSpread", 0.2)
+        self.weapons = {"Weapon 1": {"type": md.get("weaponType1", "None"), "AttackRate": 1 / attack_time, "CritChance": 5,
+                                     "PhysicalMin": rnd(dmg * (1 - spread)), "PhysicalMax": rnd(dmg * (1 + spread)),
+                                     "range": md.get("attackRange")}}
+        self.item_list = {}
+        self.reserved = {"ManaPercent": 0, "Mana": 0}
+
+    def pick_skill(self):
+        skills = [s for s in (self.md.get("skillList") or []) if s in skills_data()]
+        idx = int(self.cfg_in.get("skillMinionSkill") or self.group.get("minionSkill") or 1)
+        chosen = skills[min(max(idx, 1), len(skills)) - 1] if skills else None
+        return chosen, skills
+
+    def result(self):
+        self.setup()
+        self.calc_defence()
+        sid, options = self.pick_skill()
+        if not sid:
+            return {"type": self.mtype, "note": "no usable minion skill"}
+        sk = skills_data()[sid]
+        pseudo = {"name": sk["name"], "skillId": sid, "support": False, "req": {},
+                  "tagList": [t.lower() for t in sk.get("skillTypes", [])]}
+        gems = [{"name": sk["name"], "level": 1, "quality": 0, "enabled": True, "_gd": pseudo}]
+        gems += [g for g in self.group.get("gems", []) if g.get("enabled", True)
+                 and (data.find_gem(g["name"]) or {}).get("support")]
+        skill = self.build_skill({"slot": self.group.get("slot"), "gems": gems}, 0)
+        off = self.calc_offence(skill)
+        o = self.player.output
+        count = 1
+        lim = self.md.get("limit")
+        if lim:
+            count = max(1, int(self.summon["db"].sum("BASE", self.parent._cfg(self.summon, "buff"), lim)))
+        elif "base_number_of_zombies_allowed" in self.summon["stats"]:
+            count = int(self.summon["stats"]["base_number_of_zombies_allowed"])
+        per = off.get("total_dps", 0) or 0
+        return {"type": self.mtype, "name": self.md.get("name", self.mtype), "level": self.level,
+                "skill": off.get("skill"), "skill_options": [skills_data()[x]["name"] for x in options],
+                "supports_applied": off.get("supports"), "count": count,
+                "dps_per_minion": per, "total_dps": rnd(per * count, 1),
+                "average_hit": off.get("average_hit"), "uses_per_second": off.get("uses_per_second"),
+                "crit_chance": off.get("crit_chance"), "life": o.get("Life"), "energy_shield": o.get("EnergyShield"),
+                "resistances": {r: o.get(r + "Resist") for r in ("Fire", "Cold", "Lightning", "Chaos")},
+                "ignite": off.get("ignite"), "bleed": off.get("bleed"), "poison": off.get("poison"),
+                "notes": self.notes}
 
 
 # ======================================================================== public
@@ -1712,5 +2005,6 @@ def calculate(build) -> dict:
         "notes": c.notes,
         "unparsed_mods": [f"{a}:{b}: {t}" for a, b, t in c.unparsed][:60],
         "unparsed_count": len(c.unparsed),
+        "cluster_points": getattr(c, "cluster_points", 0),
     }
     return res

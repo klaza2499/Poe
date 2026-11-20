@@ -47,6 +47,8 @@ class Build:
         self.main_group = 1
         self.notes = ""
         self.config: dict = {}
+        self.loadouts: dict = {}
+        self.active_loadout = None
 
     # ------------------------------------------------ helpers
     @property
@@ -160,6 +162,30 @@ class Build:
         self.skill_groups.pop(index - 1)
         self.main_group = min(self.main_group, max(1, len(self.skill_groups)))
 
+    # ------------------------------------------------ loadouts (PoB tree/item/skill sets)
+    LOADOUT_KEYS = ("tree", "items", "jewels", "skills", "mainSkill", "level", "ascendancy", "bloodline", "config")
+
+    def _snapshot(self):
+        d = self.to_dict()
+        return {k: json.loads(json.dumps(d[k])) for k in self.LOADOUT_KEYS}
+
+    def save_loadout(self, name):
+        self.loadouts[name] = self._snapshot()
+        self.active_loadout = name
+
+    def switch_loadout(self, name):
+        if name not in self.loadouts:
+            raise KeyError(f"no loadout '{name}'. Existing: {list(self.loadouts)}")
+        if self.active_loadout and self.active_loadout != name:
+            self.loadouts[self.active_loadout] = self._snapshot()  # keep edits made since switching
+        snap = self.loadouts[name]
+        merged = {**self.to_dict(), **json.loads(json.dumps(snap))}
+        other = Build.from_dict(merged)
+        for attr in ("tree_nodes", "masteries", "items", "jewels", "skill_groups", "main_group", "level",
+                     "ascendancy", "bloodline", "config"):
+            setattr(self, attr, getattr(other, attr))
+        self.active_loadout = name
+
     # ------------------------------------------------ serialization
     def to_dict(self):
         return {
@@ -170,6 +196,7 @@ class Build:
             "tree": {"nodes": self.tree_nodes, "masteries": {str(k): v for k, v in self.masteries.items()}},
             "items": self.items, "jewels": {str(k): v for k, v in self.jewels.items()},
             "skills": self.skill_groups, "mainSkill": self.main_group, "notes": self.notes, "config": self.config,
+            "loadouts": self.loadouts, "activeLoadout": self.active_loadout,
         }
 
     @classmethod
@@ -188,6 +215,8 @@ class Build:
         b.main_group = d.get("mainSkill", 1)
         b.notes = d.get("notes", "")
         b.config = d.get("config", {})
+        b.loadouts = d.get("loadouts", {})
+        b.active_loadout = d.get("activeLoadout")
         return b
 
     def path(self):
@@ -233,7 +262,10 @@ class Build:
             "stats": {k: st[k] for k in ("attributes", "life", "mana", "energy_shield", "armour", "evasion", "resistances")},
             "dps": {k: st["offence"].get(k) for k in ("skill", "total_dps", "hit_dps", "dot_dps", "average_hit",
                                                         "uses_per_second", "crit_chance", "hit_chance") if k in st["offence"]}
-                   | {k: st["offence"][k]["dps"] for k in ("ignite", "bleed", "poison") if k in st["offence"]},
+                   | {k: st["offence"][k]["dps"] for k in ("ignite", "bleed", "poison") if k in st["offence"]}
+                   | ({"minion": {k: st["offence"]["minion"].get(k) for k in ("name", "count", "dps_per_minion", "total_dps", "skill", "life")}}
+                      if st["offence"].get("minion") else {})
+                   | ({"trigger": st["offence"]["trigger"]} if st["offence"].get("trigger") else {}),
             "defence": {k: st["defence"].get(k) for k in ("block", "spell_suppression", "max_hit_taken", "mana_unreserved",
                                                           "life_regen", "movement_speed")},
             "problems": st["problems"],

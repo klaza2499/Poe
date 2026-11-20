@@ -21,8 +21,15 @@ essence, enchant, cluster jewel, pantheon, minion/spectre, boss
 - 📋 รายการปัญหาที่ต้องแก้: resist ไม่ cap, attribute ไม่พอสำหรับไอเทม/เจม, เลเวลไม่ถึง, แต้มเกิน, mana ไม่พอ
 - 🔁 **Export เป็นโค้ด Path of Building** / **Import** โค้ด PoB, ลิงก์ pobb.in หรือ **ดึงตัวละครจากบัญชี pathofexile.com** (โปรไฟล์ต้องเปิด public)
 
-> ยังไม่คำนวณ: DPS ของ minion, อัตรา trigger (CoC ฯลฯ), ต้นไม้ cluster jewel / timeless jewel และ unique บางชิ้นที่ PoB เขียนโค้ดพิเศษ
-> — ถ้าบิ้วใช้ของพวกนี้ ให้ Export ไปเช็คใน PoB อีกที (หน้าสรุปจะบอกว่า mod ไหนคำนวณไม่ได้)
+- 🧟 **DPS ของ minion** (Zombie, SRS, Golem, Spectre …) รวม Minion Damage support, mod "Minions deal…" บนต้นไม้/ไอเทม และ aura ที่ช่วยมินเนี่ยน
+- ⚡ **สกิลที่ trigger**: Cast On Critical Strike (ใช้อัตรา crit ของ attack ในกลุ่มเดียวกัน + ปัดคูลดาวน์ตาม server tick แบบ PoB), Cast while Channelling, Spellslinger, CwDT (แสดงดาเมจต่อครั้ง)
+- 💠 **Cluster jewel**: ใส่ใน socket นอก ระบบนับ notable + small passive ทั้งหมด (และนับแต้มที่ใช้)
+- 🗂️ **Loadout** หลายชุดในบิ้วเดียว (Leveling / Mapping / Bossing) แบบ tree/item/skill set ของ PoB
+- ✍️ **Custom modifiers** แบบ PoB (Config) — พิมพ์ mod เพิ่มเองได้
+- ✅ เทียบผลกับ **เทสต์ของ PoB เอง** (max hit, gem level/quality, crit) — ผ่านทั้งหมด (`tests/test_pob_reference.py`)
+
+> ยังไม่ครบ: timeless jewel, unique บางชิ้น/สกิลประมาณ 120 ตัวที่ PoB เขียนสูตรพิเศษ (มีหมายเหตุบอก),
+> trigger แบบซับซ้อน (Mirage Archer, Arcanist Brand ฯลฯ คิดแบบประมาณ) — หน้าสรุปจะบอกเสมอว่าอะไรคำนวณไม่ได้
 
 ## ใช้กับ Claude
 

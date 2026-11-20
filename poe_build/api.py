@@ -722,6 +722,38 @@ def import_character(account, character, name=None, realm="pc"):
     return {"imported": b.name, "warnings": getattr(b, "_import_warnings", []), **b.summary()}
 
 
+# ---------------------------------------------------------------- loadouts
+@tool("Save the build's current tree, items, gems and config as a named loadout (like PoB's tree/item/skill sets), "
+      "e.g. 'Leveling', 'Mapping', 'Bossing'.",
+      name=("string", "build name", True), loadout=("string", "loadout name", True))
+def save_loadout(name, loadout):
+    b = _load(name)
+    b.save_loadout(loadout)
+    b.save()
+    return {"saved": loadout, "loadouts": list(b.loadouts)}
+
+
+@tool("Switch the build to a saved loadout (edits to the current one are kept in it).",
+      name=("string", "build name", True), loadout=("string", "loadout name", True))
+def switch_loadout(name, loadout):
+    b = _load(name)
+    b.switch_loadout(loadout)
+    b.save()
+    return {"active": loadout, **_brief(b)}
+
+
+@tool("List a build's loadouts with their key numbers.", name=("string", "build name", True))
+def list_loadouts(name):
+    b = _load(name)
+    out = {}
+    for ln in b.loadouts:
+        c = _clone(b)
+        c.switch_loadout(ln)
+        m = _metrics(c)
+        out[ln] = {"level": c.level, "total_dps": m["total_dps"], "life": m["life"], "energy_shield": m["energy_shield"]}
+    return {"active": b.active_loadout, "loadouts": out}
+
+
 def call(name, args):
     for t in TOOLS:
         if t["name"] == name:
