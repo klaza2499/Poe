@@ -13,7 +13,7 @@ import re
 
 from . import data
 
-_NUM = re.compile(r"\d+(?:\.\d+)?")
+_NUM = re.compile(r"(?:(?<=^)|(?<=[\s(]))[+-]?\d+(?:\.\d+)?|\d+(?:\.\d+)?")
 _RANGE = re.compile(r"\((-?\d+(?:\.\d+)?)-(-?\d+(?:\.\d+)?)\)")
 _TAG_NUM_FIELDS = ("div", "limit", "threshold", "base", "percent", "globalLimit")
 
@@ -36,13 +36,105 @@ def cache():
 
 
 @functools.lru_cache(maxsize=None)
+def lower_cache():
+    return {k.lower(): v for k, v in cache().items()}
+
+
+@functools.lru_cache(maxsize=None)
 def templates():
     idx = {}
     for line, mods in cache().items():
-        t, nums = _tmpl(line)
+        t, nums = _tmpl(line.lower())
         if nums:
             idx.setdefault(t, []).append((nums, mods))
     return idx
+
+
+_PHRASE = re.compile(r"^(\+|-)?#(%)? (increased|reduced|more|less|to|additional) (.+)$")
+
+
+@functools.lru_cache(maxsize=None)
+def phrases():
+    """Derive phrase -> (modName, type, flags, kw, tags) from simple cached lines, e.g.
+    '10% increased Fire Damage' -> ('fire damage', INC) => FireDamage."""
+    out = {}
+    for line, mods in cache().items():
+        if len(mods) != 1:
+            continue
+        m = mods[0]
+        t, nums = _tmpl(line.lower())
+        mm = _PHRASE.match(t)
+        if not mm or len(nums) != 1 or not isinstance(m.get("value"), (int, float)) or isinstance(m.get("value"), bool):
+            continue
+        word, phrase = mm.group(3), mm.group(4)
+        kind = {"increased": "INC", "reduced": "INC", "more": "MORE", "less": "MORE"}.get(word, "BASE")
+        if kind != m.get("type"):
+            continue
+        key = ("pct" if mm.group(2) else "flat") if kind == "BASE" else kind
+        sign = (-1 if word in ("reduced", "less") else 1) * (-1 if nums[0] < 0 else 1)
+        if abs(abs(m["value"]) - abs(nums[0])) > 1e-9 or (m["value"] < 0) != (sign < 0):
+            continue
+        out.setdefault((key, phrase), {k: m[k] for k in ("name", "type", "flags", "kw", "tags") if k in m})
+    return out
+
+
+_NEARBY = re.compile(r"^nearby enemies (deal|have) (.+)$", re.I)
+_GEMPROP = re.compile(r"^([+-]?\d+)%? to (level|quality) of (all|socketed) ?(.*?) ?(skill |support )?gems$", re.I)
+
+
+def _gem_property(line):
+    m = _GEMPROP.match(line.strip())
+    if not m:
+        return None
+    v, key, scope, words, kind = int(m.group(1)), m.group(2).lower(), m.group(3).lower(), m.group(4).lower(), (m.group(5) or "").strip().lower()
+    kws = [w for w in words.split() if w]
+    if kind == "skill":
+        kws.append("grants_active_skill" if not kws else "skill")
+    elif kind == "support":
+        kws.append("support")
+    val = {"key": key, "value": v}
+    if len(kws) > 1:
+        val["keywordList"] = kws
+    else:
+        val["keyword"] = kws[0] if kws else "all"
+    mod = {"name": "GemProperty", "type": "LIST", "value": val, "flags": 0, "kw": 0}
+    if scope == "socketed":
+        mod["tags"] = [{"type": "SocketedIn", "slotName": "{SlotName}"}]
+    return [mod]
+
+
+def _phrase_parse(line):
+    nm = _NEARBY.match(line.strip())
+    if nm:
+        rest = nm.group(2)
+        if nm.group(1).lower() == "deal":
+            rest = re.sub(r"^(\d+(?:\.\d+)?%) (less|more|increased|reduced) (.+)$", r"\1 \2 \3", rest)
+        inner = _parse_cached(rest)
+        if inner and len(inner) == 1 and inner[0].get("type") in ("BASE", "INC", "MORE", "FLAG"):
+            m = inner[0]
+            return [{"name": "EnemyModifier", "type": "LIST", "flags": 0, "kw": 0,
+                     "value": {"mod": {"name": m["name"], "type": m["type"], "value": m["value"],
+                                       "flags": m.get("flags", 0), "keywordFlags": m.get("kw", 0)}}}]
+        return None
+    t, nums = _tmpl(line.lower())
+    mm = _PHRASE.match(t)
+    if not mm or len(nums) != 1:
+        return None
+    word, phrase = mm.group(3), mm.group(4)
+    v = nums[0]
+    v = int(v) if float(v).is_integer() else v
+    if word in ("increased", "reduced", "more", "less"):
+        kind = "INC" if word in ("increased", "reduced") else "MORE"
+        base = phrases().get((kind, phrase)) or phrases().get(("INC" if kind == "MORE" else "MORE", phrase))
+        if not base:
+            return None
+        sign = -1 if word in ("reduced", "less") else 1
+        return [dict(copy.deepcopy(base), type=kind, value=sign * abs(v))]
+    for key in (("pct", "flat") if mm.group(2) else ("flat", "pct")):
+        base = phrases().get((key, phrase))
+        if base:
+            return [dict(copy.deepcopy(base), value=v)]
+    return None
 
 
 def _subst(mods, old, new):
@@ -54,14 +146,17 @@ def _subst(mods, old, new):
         if isinstance(v, bool) or not isinstance(v, (int, float)):
             return v
         for i, o in enumerate(old):
-            if abs(abs(v) - o) < 1e-9 and o != 0:
-                nv = new[i] if v >= 0 else -new[i]
+            if o == 0:
+                continue
+            # value sign relative to the number in the text (e.g. "reduced" stores negatives)
+            rel = (1 if v >= 0 else -1) * (1 if o >= 0 else -1)
+            if abs(abs(v) - abs(o)) < 1e-9:
+                nv = abs(new[i]) * rel * (1 if new[i] >= 0 else -1)
                 return int(nv) if float(nv).is_integer() else nv
             # values stored as fractions (e.g. 1% -> 0.01) or per-second rates
             for scale in (100, 60, 1000):
-                if abs(abs(v) * scale - o) < 1e-6 and o != 0:
-                    nv = (new[i] / scale) * (1 if v >= 0 else -1)
-                    return nv
+                if abs(abs(v) * scale - abs(o)) < 1e-6:
+                    return abs(new[i]) / scale * rel * (1 if new[i] >= 0 else -1)
         if field == "value" and v not in (0, 1, -1, 100):
             ok = False
         return v
@@ -88,7 +183,24 @@ def _parse_cached(line):
     c = cache()
     if line in c:
         return copy.deepcopy(c[line])
-    t, nums = _tmpl(line)
+    lc = lower_cache().get(line.lower())
+    if lc is not None:
+        return copy.deepcopy(lc)
+    r = _template_parse(line)
+    if r is None:
+        r = _gem_property(line)
+    if r is None:
+        r = _phrase_parse(line)
+    if r is None:
+        # users often omit the % sign ("+20 to all resistances")
+        alt = re.sub(r"^([+-]?\d+(?:\.\d+)?) to ", r"\1% to ", line)
+        if alt != line:
+            r = _template_parse(alt) or _phrase_parse(alt)
+    return r
+
+
+def _template_parse(line):
+    t, nums = _tmpl(line.lower())
     cands = templates().get(t)
     if not cands:
         return None

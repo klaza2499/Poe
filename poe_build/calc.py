@@ -35,7 +35,10 @@ def skills_data():
 
 @functools.lru_cache(maxsize=None)
 def config_options():
-    return data.load("config")
+    opts = list(data.load("config"))
+    opts.append({"var": "customMods", "type": "text", "section": "General", "mods": [],
+                 "label": "Custom modifiers: mod lines (one per line) applied to the player, like PoB's Config > Custom Modifiers"})
+    return opts
 
 
 def MF(name):
@@ -53,6 +56,20 @@ def CC(name, default=0):
 def rnd(x, n=0):
     m = 10 ** n
     return math.floor(x * m + 0.5) / m
+
+
+def norm_mod(m, source=None):
+    """Normalise a nested PoB mod table (keywordFlags / numbered tag keys) to our mod dict."""
+    out = {"name": m.get("name"), "type": m.get("type"), "value": m.get("value"),
+           "flags": m.get("flags", 0) or 0, "kw": m.get("kw", m.get("keywordFlags", 0)) or 0}
+    tags = list(m.get("tags") or [])
+    for k, v in m.items():
+        if (isinstance(k, int) or (isinstance(k, str) and k.isdigit())) and isinstance(v, dict):
+            tags.append(v)
+    out["tags"] = tags
+    if source:
+        out["source"] = source
+    return out
 
 
 # ======================================================================== ModDB
@@ -618,6 +635,17 @@ def _cfg_inputs(build):
 def apply_config(build, player, enemy, cfg_in):
     """Apply PoB Config options (same variable names as PoB)."""
     opts = {o["var"]: o for o in config_options()}
+    custom = cfg_in.get("customMods")
+    if custom:
+        for line in str(custom).replace("\r", "").split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            r = modparse.parse_line(modparse.roll(line))
+            if r is None:
+                build._custom_unparsed = getattr(build, "_custom_unparsed", []) + [line]
+            else:
+                player.moddb.add_list(r, "Custom")
     for var, val in cfg_in.items():
         o = opts.get(var)
         if not o or val in (None, False, ""):
@@ -677,7 +705,7 @@ class Calculator:
                {"type": "Multiplier", "var": "Level", "base": -CC("accuracy_rating_per_level")})
         db.new("CritMultiplier", "BASE", CC("base_critical_strike_multiplier") - 100)
         db.new("DotMultiplier", "BASE", CC("critical_ailment_dot_multiplier_+"), "Base", 0, 0, {"type": "Condition", "var": "CriticalStrike"})
-        pen = self.cfg_in.get("resistancePenalty", -60)
+        pen = float(self.cfg_in.get("resistancePenalty", -60) or 0)
         for r in ("Fire", "Cold", "Lightning", "Chaos"):
             db.new(r + "Resist", "BASE", pen)
             db.new(r + "ResistMax", "BASE", CC("base_maximum_all_resistances_%"))
@@ -829,7 +857,7 @@ class Calculator:
         """Create an active skill from a socket group's active gem."""
         gems = group.get("gems", [])
         g = gems[gem_index]
-        gd = data.find_gem(g["name"])
+        gd = g.get("_gd") or data.find_gem(g["name"])
         if not gd:
             return None
         sk = skills_data().get(gd["skillId"])
@@ -837,18 +865,8 @@ class Calculator:
             return None
         slot = group.get("slot")
         db = self.player.moddb
-        # gem level / quality boosts
-        level, quality = g.get("level", 20), g.get("quality", 0)
-        cfg0 = {"slotName": slot, "gem": gd}
-        for v in db.list(cfg0, "GemProperty"):
-            if not isinstance(v, dict):
-                continue
-            kws = v.get("keywordList") or [v.get("keyword", "all")]
-            if all(gem_is_type(gd, k) for k in kws):
-                if v.get("key") == "level":
-                    level += v.get("value", 0)
-                elif v.get("key") == "quality":
-                    quality += v.get("value", 0)
+        # gem level / quality boosts (items, global mods)
+        level, quality = self.gem_boosts(gd, slot, g.get("level", 20), g.get("quality", 0))
         types = set(sk.get("skillTypes", []))
         supports = []
         # socketed supports
@@ -879,11 +897,29 @@ class Calculator:
                 used.append((sd, ssk, lv, q))
                 types |= set(ssk.get("addSkillTypes", []))
                 active_view["skillTypes"] = sorted(types)
-        mods, row, stats, unmapped = skill_instance_mods(sk, level, quality, "Skill:" + gd["name"])
         mana_mult = 100.0
+        sup_mods = []
+        rows = []
         for sd, ssk, lv, q in used:
+            if sd.get("gemId"):
+                lv, q = self.gem_boosts(sd, slot, lv, q)
             smods, srow, _, _ = skill_instance_mods(ssk, lv, q, "Support:" + ssk["name"])
-            mods += smods
+            # Empower / Enhance style supports raise the supported gem's level / quality
+            for m in smods:
+                if m["name"] == "SupportedGemProperty" and isinstance(m["value"], dict):
+                    v = m["value"]
+                    if gem_is_type(gd, v.get("keyword", "all")):
+                        if v.get("key") == "level":
+                            level += v.get("value") or 0
+                        elif v.get("key") == "quality":
+                            quality += v.get("value") or 0
+            sup_mods += [m for m in smods if m["name"] != "SupportedGemProperty"]
+            rows.append(srow)
+        if sk.get("levels"):
+            level = max(1, min(level, max(int(k) for k in sk["levels"])))
+        mods, row, stats, unmapped = skill_instance_mods(sk, level, quality, "Skill:" + gd["name"])
+        mods += sup_mods
+        for srow in rows:
             if srow.get("manaMultiplier"):
                 mana_mult *= (100 + srow["manaMultiplier"]) / 100
         skill = {"name": gd["name"], "gem": gd, "sk": sk, "skillId": gd["skillId"], "types": types, "slot": slot,
@@ -926,6 +962,20 @@ class Calculator:
             flags.discard("hit")
         skill["flags"] = flags
         return skill
+
+    def gem_boosts(self, gd, slot, level, quality):
+        """Apply GemProperty mods (+levels / +quality from items and global modifiers)."""
+        db = self.player.moddb
+        for v in db.list({"slotName": slot, "gem": gd}, "GemProperty"):
+            if not isinstance(v, dict):
+                continue
+            kws = v.get("keywordList") or [v.get("keyword", "all")]
+            if all(gem_is_type(gd, k) for k in kws):
+                if v.get("key") == "level":
+                    level += v.get("value", 0) or 0
+                elif v.get("key") == "quality":
+                    quality += v.get("value", 0) or 0
+        return level, quality
 
     def _cfg(self, skill, mode="hit", dmg_types=()):
         f = 0
@@ -1065,7 +1115,7 @@ class Calculator:
         # enemy modifiers granted by the player ("Nearby Enemies have ...")
         for v in db.list(None, "EnemyModifier"):
             if isinstance(v, dict) and isinstance(v.get("mod"), dict):
-                edb.add(dict(v["mod"], source="EnemyModifier"))
+                edb.add(norm_mod(v["mod"], "EnemyModifier"))
 
     # -------------------------------------------------------------- defence
     def calc_defence(self):
@@ -1110,6 +1160,12 @@ class Calculator:
         out["Mana"] = max(0, rnd(db.sum("BASE", None, "Mana") * (1 + db.sum("INC", None, "Mana") / 100) * db.more(None, "Mana")))
         es_inc = db.sum("INC", None, "EnergyShield", "Defences", "ArmourAndEnergyShield", "EvasionAndEnergyShield")
         out["EnergyShield"] = max(0, rnd(db.sum("BASE", None, "EnergyShield") * (1 + es_inc / 100) * db.more(None, "EnergyShield", "Defences")))
+        gain = db.sum("BASE", None, "LifeGainAsEnergyShield")
+        if gain and not ci:
+            out["EnergyShield"] += rnd(out["Life"] * gain / 100)
+        gain = db.sum("BASE", None, "ManaGainAsEnergyShield")
+        if gain:
+            out["EnergyShield"] += rnd(out["Mana"] * gain / 100)
         arm_inc = db.sum("INC", None, "Armour", "ArmourAndEvasion", "ArmourAndEnergyShield", "Defences")
         out["Armour"] = max(0, rnd(db.sum("BASE", None, "Armour", "ArmourAndEvasion") * (1 + arm_inc / 100) * db.more(None, "Armour", "Defences")))
         eva_inc = db.sum("INC", None, "Evasion", "ArmourAndEvasion", "EvasionAndEnergyShield", "Defences")
@@ -1159,36 +1215,72 @@ class Calculator:
         # armour penalty from body armour
         out["Accuracy"] = rnd(db.sum("BASE", {"flags": MF("Attack")}, "Accuracy") * (1 + db.sum("INC", {"flags": MF("Attack")}, "Accuracy") / 100) * db.more({"flags": MF("Attack")}, "Accuracy"))
         out["PhysicalDamageReduction"] = min(db.sum("BASE", None, "PhysicalDamageReduction"), 90)
-        # max hit taken (rough PoB-style: life+ES pool, resists, armour for physical)
-        pool = out["Life"] + (out["EnergyShield"] if not db.flag(None, "EnergyShieldBypass") else 0)
-        if db.flag(None, "ChaosInoculation"):
-            pool = out["EnergyShield"] + 1
-        mom = db.sum("BASE", None, "DamageTakenFromManaBeforeLife")
-        if mom:
-            pool = min(pool / (1 - mom / 100), pool + out["ManaUnreserved"])
-        for el in ("Fire", "Cold", "Lightning", "Chaos"):
-            res = out[el + "Resist"]
-            taken = (1 + db.sum("INC", None, "DamageTaken", el + "DamageTaken", "ElementalDamageTaken" if el != "Chaos" else "X") / 100) * \
-                db.more(None, "DamageTaken", el + "DamageTaken", "ElementalDamageTaken" if el != "Chaos" else "X")
-            p = pool if el != "Chaos" or db.flag(None, "ChaosInoculation") or db.flag(None, "EnergyShieldProtectsFromChaos") else out["Life"]
-            if el == "Chaos" and not db.flag(None, "ChaosInoculation"):
-                p = out["Life"] + out["EnergyShield"]  # 3.x: chaos no longer bypasses ES
-            mult = (1 - res / 100) * taken
-            out[el + "MaximumHitTaken"] = rnd(p / mult) if mult > 0 else float("inf")
+        # max hit taken (PoB CalcDefence: pools / (resist * reduction * taken) / enemy damage mult)
+        edb = self.enemy.moddb
+        ci = db.flag(None, "ChaosInoculation")
+        life, es = out["Life"], out["EnergyShield"]
+        mom = min(db.sum("BASE", None, "DamageTakenFromManaBeforeLife"), 100)
+        mana_pool = out.get("ManaUnreserved", out["Mana"]) if mom else 0
         armour = out["Armour"]
-        dr0 = out["PhysicalDamageReduction"]
-
-        def phys_taken(hit):
-            dr = min(90, dr0 + (armour / (armour + 5 * hit) * 100 if hit > 0 else 0))
-            return hit * (1 - dr / 100)
-        lo, hi = 1.0, pool * 20
-        for _ in range(60):
-            mid = (lo + hi) / 2
-            if phys_taken(mid) > pool:
-                hi = mid
+        dr_max = 90
+        bd = getattr(self, "bd", {"pen": 0})
+        cfgi = getattr(self, "cfg_in", {})
+        for el in ("Physical", "Fire", "Cold", "Lightning", "Chaos"):
+            is_ele = el in ELEMENTAL
+            if el == "Physical":
+                resist = 0
             else:
-                lo = mid
-        out["PhysicalMaximumHitTaken"] = rnd(lo)
+                resist = out[el + "Resist"]
+            pen = float(cfgi.get(f"enemy{el}Pen", bd.get("pen", 0) if is_ele else 0) or 0)
+            res_mult = 1 - (resist - pen) / 100
+            red_names = [el + "DamageReduction"] + (["ElementalDamageReduction"] if is_ele else [])
+            ov = db.override(None, el + "DamageReduction")
+            reduction = ov if ov is not None else db.sum("BASE", None, *red_names)
+            reduction = min(reduction, dr_max)
+            overwhelm = float(cfgi.get("enemyPhysicalOverwhelm", 0) or 0) if el == "Physical" else 0
+            if el == "Physical":
+                armour_pct = 0 if db.flag(None, "ArmourDoesNotApplyToPhysicalDamageTaken") else 100
+            else:
+                armour_pct = min(db.sum("BASE", None, "ArmourAppliesTo" + el + "DamageTaken"), 100)
+            eff_armour = armour * armour_pct / 100
+            tnames = ["DamageTaken", el + "DamageTaken", "DamageTakenWhenHit", el + "DamageTakenWhenHit"] + \
+                (["ElementalDamageTaken"] if is_ele else [])
+            taken = max((1 + db.sum("INC", None, *tnames) / 100) * db.more(None, *tnames), 0)
+            enames = ["Damage", el + "Damage"] + (["ElementalDamage"] if is_ele else [])
+            enemy_mult = (1 + edb.sum("INC", None, *enames) / 100) * edb.more(None, *enames)
+            pool = life + (es if (el != "Chaos" or ci or db.flag(None, "ChaosNotBypassEnergyShield")
+                                  or db.flag(None, "EnergyShieldProtectsFromChaos")) else 0)
+            if ci:
+                pool = es + (0 if el == "Chaos" else 1)
+            if mom:
+                pool = min(pool / (1 - mom / 100), pool + mana_pool) if mom < 100 else pool + mana_pool
+
+            def taken_from(raw):
+                ar = eff_armour / (eff_armour + 5 * raw * res_mult) * 100 if eff_armour > 0 and raw > 0 else 0
+                tot = min(dr_max, min(dr_max, ar) + reduction)
+                red_mult = 1 - max(min(dr_max, tot - overwhelm), 0) / 100
+                return raw * res_mult * red_mult * taken
+            if el == "Chaos" and ci:
+                out[el + "MaximumHitTaken"] = float("inf")
+                continue
+            if taken_from(1e9) <= 0:
+                out[el + "MaximumHitTaken"] = float("inf")
+                continue
+            if eff_armour > 0:
+                lo, hi = 0.0, 1.0
+                while taken_from(hi) < pool:
+                    hi *= 2
+                for _ in range(80):
+                    mid = (lo + hi) / 2
+                    if taken_from(mid) > pool:
+                        hi = mid
+                    else:
+                        lo = mid
+                raw = lo
+            else:
+                raw = pool / taken_from(1.0)
+            out[el + "MaximumHitTaken"] = rnd(raw / enemy_mult) if enemy_mult > 0 else float("inf")
+        pool = life + es
         out["TotalEHPPool"] = pool
 
     # -------------------------------------------------------------- offence
@@ -1569,6 +1661,11 @@ class Calculator:
                         if g.get("enabled", True) and data.find_gem(g["name"]) and not data.find_gem(g["name"])["support"]), None)
             if idx is not None:
                 main = (grp, idx)
+        if main is None:
+            # like PoB: with no active skill the main skill is the Default Attack
+            main = ({"slot": None, "enabled": True, "gems": [{"name": "Default Attack", "level": 1, "quality": 0,
+                     "enabled": True, "_gd": {"name": "Default Attack", "skillId": "Melee", "support": False,
+                                              "tagList": ["attack", "melee"], "req": {}}}]}, 0)
         # first pass: defence (attributes needed by PerStat in skills)
         self.reserved = {"ManaPercent": 0, "Mana": 0}
         self.calc_defence()

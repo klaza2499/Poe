@@ -56,8 +56,14 @@ def parse_item(text: str) -> dict:
     while i < len(lines) and not re.match(r"^[A-Za-z][A-Za-z ]*:", lines[i]) and len(header) < 2:
         header.append(lines[i])
         i += 1
-    if it["rarity"] in ("RARE", "UNIQUE", "RELIC") and len(header) >= 2:
+    if len(header) == 2 and not data.find_base(header[1]) and it["rarity"] not in ("RARE", "UNIQUE", "RELIC"):
+        # second line is not a base: it is the first mod line of a normal/magic item
+        header = header[:1]
+        i -= 1
+    if len(header) >= 2:
         it["name"], it["base"] = header[0], header[1]
+        if it["rarity"] == "NORMAL" and data.find_base(header[1]) and not data.find_base(header[0]):
+            it["rarity"] = "RARE" if not lines[0].startswith("Rarity:") else it["rarity"]
     elif header:
         it["name"] = it["base"] = header[0]
         b = _base_from_magic(header[0])
