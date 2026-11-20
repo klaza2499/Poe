@@ -437,7 +437,12 @@ class Build:
             sets = sk.findall("SkillSet") or [sk]
             act = sk.get("activeSkillSet", "1")
             sset = next((s for s in sets if s.get("id") == act), sets[0])
-            for s in sset.findall("Skill"):
+            pob_main = b.main_group
+            for pos, s in enumerate(sset.findall("Skill"), 1):
+                if s.get("source"):
+                    if pos < pob_main:
+                        b.main_group -= 1  # PoB counts its auto-generated groups
+                    continue  # granted by an item/passive: recreated automatically by the calc engine
                 g = {"slot": s.get("slot"), "label": s.get("label"), "enabled": s.get("enabled", "true") == "true", "gems": []}
                 for gm in s.findall("Gem"):
                     nm = gm.get("nameSpec") or gm.get("skillId")
@@ -450,6 +455,13 @@ class Build:
             b.notes = notes.text.strip()
         cfg = root.find("Config")
         if cfg is not None:
+            b.config_placeholders = {}
+            for ph in cfg.iter("Placeholder"):
+                v = ph.get("number") or ph.get("string")
+                if ph.get("number"):
+                    v = float(ph.get("number"))
+                if ph.get("name") not in ("enemyArmour", "enemyEvasion"):
+                    b.config_placeholders[ph.get("name")] = v
             for inp in cfg.iter("Input"):
                 v = inp.get("boolean") or inp.get("number") or inp.get("string")
                 if inp.get("boolean"):

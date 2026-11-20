@@ -184,6 +184,10 @@ class ModDB:
                     div = t.get("div") or 1
                     mult = base / div if t.get("noFloor") else math.floor(base / div + 0.0001)
                 lim = t.get("limit")
+                if lim is None and t.get("limitVar"):
+                    lim = tgt.get_multiplier(t["limitVar"], cfg) or None
+                if lim is None and t.get("limitStat"):
+                    lim = tgt.get_stat(t["limitStat"], cfg) or tgt.sum("BASE", cfg, t["limitStat"]) or None
                 limit_total = None
                 if lim is not None:
                     if t.get("limitTotal"):
@@ -695,6 +699,15 @@ def _cfg_inputs(build):
 def apply_config(build, player, enemy, cfg_in):
     """Apply PoB Config options (same variable names as PoB)."""
     opts = {o["var"]: o for o in config_options()}
+    # PoB uses an option's placeholder value when it is left empty (e.g. 5 Spectral Tigers)
+    cfg_in = dict(cfg_in)
+    for o in config_options():
+        if o["var"] not in cfg_in and isinstance(o.get("defaultPlaceholderState"), (int, float)) \
+                and not isinstance(o.get("defaultPlaceholderState"), bool) and o.get("type") in ("count", "integer", "countAllowZero"):
+            cfg_in[o["var"]] = o["defaultPlaceholderState"]
+    for k, v in (getattr(build, "config_placeholders", None) or {}).items():
+        if not k.startswith("enemy"):  # enemy defaults come from boss_defaults()
+            cfg_in.setdefault(k, v)
     custom = cfg_in.get("customMods")
     if custom:
         for line in str(custom).replace("\r", "").split("\n"):
@@ -786,6 +799,7 @@ class Calculator:
         db.new("Damage", "MORE", 200, "Base", 0, KF("Bleed"), {"type": "ActorCondition", "actor": "enemy", "var": "Moving"})
         db.new("EnemyCurseLimit", "BASE", 1)
         db.new("ActiveTotemLimit", "BASE", 1)
+        db.new("Multiplier:IntensityLimit", "BASE", 3)
         db.new("ProjectileCount", "BASE", 1)
         db.new("MovementSpeed", "INC", 0)
         bandit = b.bandit or "None"
@@ -897,6 +911,25 @@ class Calculator:
                     self.unparsed.append(("keystone", ks, st))
                 else:
                     db.add_list(r, "Keystone:" + ks)
+        # anointed notables ("Allocates Longshot")
+        anointed = []
+        for slot, (it, base) in self.item_list.items():
+            for line in itemsmod.active_mod_lines(it):
+                mm = __import__("re").match(r"^Allocates (.+)$", line)
+                if mm:
+                    anointed.append(mm.group(1).strip())
+        for nm in anointed:
+            node = next((n for n in data.nodes().values() if n["name"] == nm and n["type"] in ("notable", "keystone")
+                         and not n.get("ascendancy")), None)
+            if node is None:
+                continue
+            self.unparsed = [u for u in self.unparsed if u[2] != f"Allocates {nm}"]
+            for st in node.get("stats", []):
+                r = modparse.parse_line(st.replace("\n", " "))
+                if r is None:
+                    self.unparsed.append(("anoint", nm, st))
+                else:
+                    db.add_list(r, "Anoint:" + nm)
         self.apply_flasks()
         # weapon conditions
         w1, w2 = self.weapons.get("Weapon 1"), self.weapons.get("Weapon 2")
@@ -1222,8 +1255,25 @@ class Calculator:
         return {"flags": f, "kw": kw, "skillName": skill["name"], "skillId": skill["skillId"],
                 "skillTypes": skill["types"], "slotName": skill["slot"], "baseFlags": skill["flags"],
                 "gem": skill["gem"], "skillPart": skill.get("part", 1),
-                "skillDist": self.cfg_in.get("projectileDistance"),
+                "skillDist": float(self.cfg_in.get("projectileDistance") or 40) if "projectile" in fl
+                else float(self.cfg_in.get("meleeDistance") or 15),
                 "skillCond": {}}
+
+    def extra_skill_groups(self):
+        """Skills granted by passives/items ('Grants Level 20 Summon Spectral Tiger'), like PoB's auto groups."""
+        out = []
+        for v in self.player.moddb.list(None, "ExtraSkill"):
+            if not isinstance(v, dict) or not v.get("skillId") or v.get("triggered"):
+                continue
+            sk = skills_data().get(v["skillId"])
+            if not sk or sk.get("support"):
+                continue
+            gd = next((g for g in data.gems().values() if g.get("skillId") == v["skillId"]), None) or {
+                "name": sk["name"], "skillId": v["skillId"], "support": False, "req": {},
+                "tagList": [t.lower() for t in sk.get("skillTypes", [])]}
+            out.append({"slot": None, "enabled": True, "source": "granted",
+                        "gems": [{"name": sk["name"], "level": v.get("level", 1), "quality": 0, "enabled": True, "_gd": gd}]})
+        return out
 
     def _reserve(self, sk, cfg, reserved):
         sdb, sd = sk["db"], sk["data"]
@@ -1323,14 +1373,33 @@ class Calculator:
         curses = []
         self.buffs = []
         self.ally_buffs = []
+        # count heralds / auras affecting you (PoB CalcPerform)
+        heralds, auras = set(), set()
+        for grp in list(b.skill_groups) + self.extra_skill_groups():
+            if not grp.get("enabled", True) or "Swap" in (grp.get("slot") or ""):
+                continue
+            for g in grp.get("gems", []):
+                gd = g.get("_gd") or data.find_gem(g["name"])
+                if not gd or gd["support"] or not g.get("enabled", True):
+                    continue
+                st = set(skills_data().get(gd["skillId"], {}).get("skillTypes", []))
+                if "Herald" in st:
+                    heralds.add(gd["name"])
+                elif "Aura" in st and "AuraAffectsEnemies" not in st:
+                    auras.add(gd["name"])
+        if heralds:
+            db.multipliers["Herald"] = len(heralds)
+            db.conditions["AffectedByHerald"] = True
+        if auras:
+            db.multipliers["AuraAffectingSelf"] = len(auras)
         reserved = {"Mana": 0, "Life": 0, "ManaPercent": 0.0, "LifePercent": 0.0}
-        for gi, grp in enumerate(b.skill_groups, 1):
+        for gi, grp in enumerate(list(b.skill_groups) + self.extra_skill_groups(), 1):
             if not grp.get("enabled", True) or "Swap" in (grp.get("slot") or ""):
                 continue  # PoB: gems in the inactive weapon set do nothing
             for i, g in enumerate(grp.get("gems", [])):
                 if not g.get("enabled", True):
                     continue
-                gd = data.find_gem(g["name"])
+                gd = g.get("_gd") or data.find_gem(g["name"])
                 if not gd or gd["support"]:
                     continue
                 sk = self.build_skill(grp, i)
@@ -1367,6 +1436,7 @@ class Calculator:
                     if gt.get("effectType") == "Aura" and tgt is db:
                         self.ally_buffs.append(nm)
                 self.buffs.append(f"{sk['name']} (+{inc:.0f}% effect)")
+                db.conditions["AffectedBy" + sk["name"].replace(" ", "").replace("'", "")] = True
         limit = int(db.sum("BASE", None, "EnemyCurseLimit"))
         self.curses = []
         for sk in curses[:max(limit, 0)]:
@@ -1493,7 +1563,10 @@ class Calculator:
         mana_regen = out["Mana"] * 0.0175 + db.sum("BASE", None, "ManaRegen") + out["Mana"] * db.sum("BASE", None, "ManaRegenPercent") / 100
         out["ManaRegen"] = rnd(mana_regen * (1 + db.sum("INC", None, "ManaRegen", "ManaRecoveryRate") / 100) * db.more(None, "ManaRegen"), 1)
         out["EnergyShieldRecharge"] = rnd(out["EnergyShield"] * 0.33 * (1 + db.sum("INC", None, "EnergyShieldRecharge") / 100), 1)
-        out["MovementSpeedMod"] = rnd((1 + db.sum("INC", None, "MovementSpeed") / 100) * db.more(None, "MovementSpeed"), 3)
+        tc = max(-75, db.sum("INC", None, "TemporalChainsActionSpeed"))
+        out["ActionSpeedMod"] = max(0, 1 + (tc + db.sum("INC", None, "ActionSpeed")) / 100)
+        out["MovementSpeedMod"] = rnd((1 + db.sum("INC", None, "MovementSpeed") / 100) * db.more(None, "MovementSpeed")
+                                      * out["ActionSpeedMod"], 4)
         # armour penalty from body armour
         out["Accuracy"] = rnd(db.sum("BASE", {"flags": MF("Attack")}, "Accuracy") * (1 + db.sum("INC", {"flags": MF("Attack")}, "Accuracy") / 100) * db.more({"flags": MF("Attack")}, "Accuracy"))
         out["PhysicalDamageReduction"] = min(db.sum("BASE", None, "PhysicalDamageReduction"), 90)
@@ -1804,6 +1877,8 @@ class Calculator:
             for dst in DMG_TYPES:
                 tmin = tmax = 0
                 bmin = bmax = 0
+                if sdb.flag(cfg, "DealNo" + dst, "DealNoDamage"):
+                    continue
                 for chain, (mn, mx) in buckets[dst].items():
                     if not (mn or mx):
                         continue
@@ -1866,6 +1941,7 @@ class Calculator:
                 speed = 1 / ct if ct else 1
                 sp_cfg = dict(cfg, flags=cfg["flags"] | MF("Cast"))
             speed *= (1 + sdb.sum("INC", sp_cfg, "Speed") / 100) * sdb.more(sp_cfg, "Speed")
+            speed *= self.player.output.get("ActionSpeedMod", 1)
             if sd.get("cooldown"):
                 cd = sd["cooldown"] / (1 + sdb.sum("INC", cfg, "CooldownRecovery") / 100)
                 speed = min(speed, (sd.get("storedUses") or 1) / cd if cd else speed)

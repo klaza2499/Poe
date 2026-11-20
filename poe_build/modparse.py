@@ -82,6 +82,20 @@ _NEARBY = re.compile(r"^nearby enemies (deal|have) (.+)$", re.I)
 _GEMPROP = re.compile(r"^([+-]?\d+)%? to (level|quality) of (all|socketed) ?(.*?) ?(skill |support )?gems$", re.I)
 
 
+_TYPES = ("Physical", "Lightning", "Cold", "Fire", "Chaos")
+
+
+def _deal_no(line):
+    """'Deal no Non-Fire Damage', 'Deal no Physical Damage' (PoB DealNo<Type> flags)."""
+    m = re.match(r"^deal no (non-)?(physical|lightning|cold|fire|chaos|elemental) damage$", line.strip(), re.I)
+    if not m:
+        return None
+    word = m.group(2).capitalize()
+    group = ["Lightning", "Cold", "Fire"] if word == "Elemental" else [word]
+    types = [t for t in _TYPES if (t not in group) == bool(m.group(1))]
+    return [{"name": "DealNo" + t, "type": "FLAG", "value": True, "flags": 0, "kw": 0} for t in types]
+
+
 def _gem_property(line):
     m = _GEMPROP.match(line.strip())
     if not m:
@@ -187,6 +201,8 @@ def _parse_cached(line):
     if lc is not None:
         return copy.deepcopy(lc)
     r = _template_parse(line)
+    if r is None:
+        r = _deal_no(line)
     if r is None:
         r = _gem_property(line)
     if r is None:
