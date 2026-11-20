@@ -1,3 +1,68 @@
+# PoE Build Planner 🛠️ (คล้าย Path of Building — ให้ Claude ทำบิ้วได้เอง)
+
+`poe_build/` คือโปรแกรมวางแผนบิ้ว **Path of Exile 1** ที่มีข้อมูลเกมครบ (ดึงจาก Path of Building Community)
+และออกแบบมาให้ **Claude เข้าไปค้นข้อมูลและทำบิ้วได้เองทั้งหมด** ผ่าน MCP / command line ส่วนคุณดูบิ้วสดๆ ในเว็บ
+
+**ข้อมูลที่มี** (ต้นไม้ 3.30): passive 3,468 node (notable / keystone / mastery / ascendancy / bloodline),
+เจม 824 อัน (รวม support พร้อมกฎว่าเสริมสกิลไหนได้), unique 1,318 ชิ้น (ทุก variant), base item 1,271 แบบ,
+mod ~25,000 ตัว (prefix/suffix ทุก tier, craft bench, corrupted, veiled, eldritch, jewel, flask …),
+essence, enchant, cluster jewel, pantheon, minion/spectre, boss
+
+**ทำอะไรได้**
+- 🌳 เพิ่ม passive แค่บอกชื่อ — หาเส้นทางสั้นที่สุดให้อัตโนมัติ, เลือก mastery, ascendancy, bloodline
+- 💎 จัดกลุ่มเจม + เช็คว่า support ใช้กับสกิลได้จริง (กฎ skill type แบบเดียวกับ PoB)
+- 🛡️ ใส่ unique ตามชื่อ หรือสร้าง rare จาก base + mod ที่ roll ได้จริงบน base นั้น / วางข้อความไอเทมจากเกม
+- 📊 คำนวณเร็ว: attribute, life/mana/ES, armour/evasion, resist (หลังโดน -60%), แต้มที่ใช้ และ **รายการปัญหาที่ต้องแก้**
+- 🔁 **Export เป็นโค้ด Path of Building** (ไปดู DPS จริงใน PoB) และ **Import** โค้ด PoB / ลิงก์ pobb.in กลับมาให้ Claude วิเคราะห์
+
+> ตัวคำนวณในนี้เป็นค่าประมาณ (ไม่มี DPS, ไม่คิดบัฟ/เงื่อนไข) — ตัวเลขละเอียดให้กด Export แล้ววางใน PoB
+
+## ใช้กับ Claude
+
+**Claude Code** — เปิดโฟลเดอร์นี้ใน Claude Code จะเจอ MCP server `poe-build` จาก `.mcp.json` เอง
+(และ `CLAUDE.md` สอนวิธีใช้ไว้แล้ว) แล้วสั่งได้เลย เช่น
+*"ทำบิ้ว Righteous Fire Juggernaut เลเวล 95 งบน้อย ใส่ของให้ resist ครบ แล้วขอโค้ด PoB"*
+
+**Claude Desktop** — เพิ่มใน `claude_desktop_config.json` (Settings → Developer → Edit Config):
+```json
+{
+  "mcpServers": {
+    "poe-build": {
+      "command": "python",
+      "args": ["-m", "poe_build", "mcp"],
+      "env": { "PYTHONPATH": "C:\\path\\to\\Poe" }
+    }
+  }
+}
+```
+(เปลี่ยน `C:\\path\\to\\Poe` เป็นที่อยู่โฟลเดอร์นี้ แล้วปิด-เปิด Claude Desktop ใหม่)
+
+**Command line** (ใช้ได้ทุกที่ ผลเป็น JSON): `python -m poe_build tools` ดูคำสั่งทั้งหมด
+```bash
+python -m poe_build new_build --name "RF Jugg" --class_name Marauder --ascendancy Juggernaut --level 95
+python -m poe_build allocate --name "RF Jugg" --nodes "Unbreakable" "Heart of Oak"
+python -m poe_build show_build --name "RF Jugg"
+python -m poe_build export_pob --name "RF Jugg"
+```
+
+## หน้าเว็บ (ดู/แก้บิ้วเอง)
+
+ดับเบิลคลิก **`run_planner.bat`** (หรือ `python -m poe_build web`) → เปิด http://127.0.0.1:8765
+- ต้นไม้ passive: คลิก node เพื่อเพิ่ม/ลบ (ชี้เมาส์เห็นเส้นทาง + จำนวนแต้ม), ค้นหาไฮไลต์ node
+- แท็บ สรุป / ไอเทม / สกิล / Passive / โน้ต, ปุ่ม Export / Import โค้ด PoB
+- **อัปเดตสด** — ระหว่างที่ Claude แก้บิ้วผ่าน MCP หน้าเว็บจะเปลี่ยนตามเองทุก 2 วินาที
+
+บิ้วเก็บเป็นไฟล์ JSON ในโฟลเดอร์ `builds/` (ตั้งที่อื่นได้ด้วย env `POE_BUILDS_DIR`) ไม่ต้องติดตั้งอะไรเพิ่ม ใช้แค่ Python 3.10+
+
+## อัปเดตข้อมูลเมื่อมีลีกใหม่
+
+```bash
+tools/update_data.sh 3_30     # ดึงข้อมูลล่าสุดจาก PoB Community แล้วแปลงเป็น poe_build/data/
+```
+ตัวแปลง (`tools/build_data.py`) แค่ *อ่าน* ไฟล์ Lua ของ PoB เป็นข้อมูล ไม่ได้รันโค้ดใดๆ
+
+---
+
 # PoE Act Helper ⚡
 
 Overlay ช่วยวิ่ง Act 1–10 ใน **Path of Exile 1** ให้จบเร็วที่สุด — ลอยอยู่บนเกม บอกว่าต้องทำอะไรในแต่ละโซน

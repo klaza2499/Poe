@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PoE Build Planner</title>
+<style>
+:root{--bg:#0d0b09;--panel:#17130f;--panel2:#201a14;--line:#3a2f24;--text:#e8dcc8;--dim:#9c8d77;--gold:#e0b45a;--gold2:#ffd98a;--red:#e0625a;--green:#7fc46a;--blue:#6aa8e0;--accent:#c0782a}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,"Segoe UI","Noto Sans Thai",sans-serif}
+button,select,input,textarea{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:5px 9px}
+button{cursor:pointer}button:hover{border-color:var(--gold)}
+button.pri{background:#4a2f12;border-color:var(--accent)}
+#top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line)}
+#top h1{font-size:16px;margin:0 8px 0 0;color:var(--gold)}
+#top .sp{flex:1}
+#live{font-size:12px;color:var(--dim)}
+#main{display:flex;height:calc(100% - 50px)}
+#treewrap{position:relative;flex:1;min-width:0;overflow:hidden}
+canvas{display:block;width:100%;height:100%;cursor:grab}
+#side{width:420px;max-width:45vw;background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column}
+#tabs{display:flex;border-bottom:1px solid var(--line)}
+#tabs button{flex:1;border:0;border-radius:0;background:none;padding:9px 4px;color:var(--dim)}
+#tabs button.on{color:var(--gold);box-shadow:inset 0 -2px var(--gold)}
+#pane{overflow:auto;padding:12px;flex:1}
+.card{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:10px}
+.card h3{margin:0 0 6px;font-size:13px;color:var(--gold);font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.stat{background:#120f0c;border-radius:6px;padding:6px 8px}
+.stat b{display:block;font-size:17px}.stat span{font-size:11px;color:var(--dim)}
+.res-ok{color:var(--green)}.res-bad{color:var(--red)}
+.prob{color:var(--red);font-size:13px;margin:2px 0}
+.tag{display:inline-block;background:#2a2118;border:1px solid var(--line);border-radius:10px;padding:1px 8px;margin:2px;font-size:12px}
+.item{white-space:pre-wrap;font-size:12px;color:#cbb994;margin-top:4px;display:none}
+.item.open{display:block}
+.slot{display:flex;justify-content:space-between;gap:6px;align-items:center;padding:4px 0;border-bottom:1px dashed var(--line)}
+.slot .nm{cursor:pointer}.slot .nm:hover{color:var(--gold2)}
+.u{color:#d08a3a}.r{color:#e6d36a}.m{color:#8aa8ff}
+#tip{position:absolute;pointer-events:none;background:rgba(15,12,9,.96);border:1px solid var(--gold);border-radius:6px;padding:8px 10px;max-width:340px;font-size:13px;display:none;z-index:5}
+#tip .nn{color:var(--gold2);font-weight:600}#tip .cost{color:var(--dim);font-size:12px;margin-top:4px}
+#search{position:absolute;left:10px;top:10px;z-index:4;display:flex;gap:6px}
+#search input{width:230px;background:rgba(23,19,15,.9)}
+#legend{position:absolute;left:10px;bottom:10px;font-size:12px;color:var(--dim);background:rgba(23,19,15,.85);padding:6px 9px;border-radius:6px}
+#modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:10}
+#modal .box{background:var(--panel);border:1px solid var(--gold);border-radius:10px;padding:16px;width:min(560px,94vw);max-height:85vh;overflow:auto}
+#modal textarea{width:100%;height:140px}
+.row{display:flex;gap:6px;align-items:center;margin:6px 0;flex-wrap:wrap}
+.muted{color:var(--dim);font-size:12px}
+.opt{display:block;width:100%;text-align:left;margin:4px 0}
+@media (max-width:800px){#main{flex-direction:column}#side{width:100%;max-width:none;height:50%}#treewrap{height:50%}}
+</style>
+</head>
+<body>
+<div id="top">
+  <h1>⚔ PoE Build Planner</h1>
+  <select id="buildSel" title="บิ้วที่บันทึกไว้"></select>
+  <button onclick="newBuild()">＋ ใหม่</button>
+  <span class="muted">Lv</span><input id="lvl" type="number" min="1" max="100" style="width:64px" onchange="setLevel()">
+  <select id="ascSel" onchange="setAsc()"></select>
+  <button onclick="exportCode()">📤 Export PoB</button>
+  <button onclick="importCode()">📥 Import</button>
+  <span class="sp"></span>
+  <span id="live">●</span>
+</div>
+<div id="main">
+  <div id="treewrap">
+    <canvas id="cv"></canvas>
+    <div id="search"><input id="q" placeholder="ค้นหา passive (เช่น life, crit)…" oninput="draw()"></div>
+    <div id="legend">คลิก = เพิ่ม/ลบ node (เดินทางให้อัตโนมัติ) · ลาก = เลื่อน · ล้อเมาส์ = ซูม</div>
+    <div id="tip"></div>
+  </div>
+  <div id="side">
+    <div id="tabs">
+      <button data-t="sum" class="on">สรุป</button><button data-t="items">ไอเทม</button><button data-t="skills">สกิล</button><button data-t="tree">Passive</button><button data-t="notes">โน้ต</button>
+    </div>
+    <div id="pane"></div>
+  </div>
+</div>
+<div id="modal"><div class="box" id="mbox"></div></div>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let T=null, N={}, B=null, S=null, cur=null, mtime=0, tab='sum';
+const view={x:0,y:0,z:0.08};
+async function call(tool,args){const r=await fetch('/api/call',{method:'POST',body:JSON.stringify({tool,args})});const j=await r.json();if(j.error){alert(j.error);throw j.error}return j.result}
+async function loadTree(){T=await (await fetch('/api/tree')).json();for(const n of T.nodes)N[n.id]=n;
+  const sel=$('#ascSel');for(const c of T.classes){const o=document.createElement('option');o.value=c.name+'|';o.textContent=c.name;sel.appendChild(o);for(const a of c.ascendancies){const p=document.createElement('option');p.value=c.name+'|'+a.id;p.textContent='  └ '+a.name;sel.appendChild(p)}}}
+async function refreshList(sel){const r=await call('list_builds',{});const bs=$('#buildSel');bs.innerHTML='';
+  if(!r.builds.length){bs.innerHTML='<option>(ยังไม่มีบิ้ว)</option>'}
+  for(const b of r.builds){const o=document.createElement('option');o.value=b;o.textContent=b;bs.appendChild(o)}
+  if(sel)bs.value=sel;}
+async function loadBuild(name){if(!name)return;const r=await (await fetch('/api/build?name='+encodeURIComponent(name))).json();if(r.error)return;
+  cur=name;B=r.raw;S=r.summary;mtime=r.mtime;try{localStorage.setItem('poeb.cur',name)}catch(e){}
+  $('#lvl').value=B.level;$('#ascSel').value=B.class+'|'+(B.ascendancy||'');
+  if(!loadBuild.centered){centerOn(classStart());loadBuild.centered=true}
+  render();draw();}
+function classStart(){const c=T.classes.find(c=>c.name===B.class);return c?N[c.startNode]:null}
+function centerOn(n){if(!n)return;const cv=$('#cv');view.z=0.12;view.x=n.x;view.y=n.y}
+// ---------------- tree drawing
+const cv=$('#cv'),ctx=cv.getContext('2d');
+function resize(){const r=cv.getBoundingClientRect();cv.width=r.width*devicePixelRatio;cv.height=r.height*devicePixelRatio;draw()}
+function w2s(x,y){return[(x-view.x)*view.z*devicePixelRatio+cv.width/2,(y-view.y)*view.z*devicePixelRatio+cv.height/2]}
+function s2w(px,py){return[(px*devicePixelRatio-cv.width/2)/(view.z*devicePixelRatio)+view.x,(py*devicePixelRatio-cv.height/2)/(view.z*devicePixelRatio)+view.y]}
+function visibleAsc(n){if(!n.asc)return true;if(!B)return false;return n.asc===B.ascendancy||n.asc===B.bloodline}
+function radius(n){return {keystone:46,notable:32,mastery:30,jewel:30,classStart:60,ascendancyStart:24,normal:20}[n.t]||20}
+let hoverPath=[],hoverNode=null;
+function draw(){if(!T)return;ctx.fillStyle='#0d0b09';ctx.fillRect(0,0,cv.width,cv.height);
+  const alloc=new Set(B?B.tree.nodes:[]);const q=$('#q').value.trim().toLowerCase();const words=q?q.split(/\s+/):[];
+  const hp=new Set(hoverPath);
+  ctx.lineWidth=Math.max(1,6*view.z*devicePixelRatio);
+  for(const n of T.nodes){if(!visibleAsc(n)||n.t==='mastery')continue;const[x1,y1]=w2s(n.x,n.y);
+    for(const a of n.a){if(a<n.id)continue;const m=N[a];if(!m||!visibleAsc(m)||m.t==='mastery')continue;if(!!m.asc!==!!n.asc)continue;
+      if((n.t==='classStart'||m.t==='classStart')&&B){const cs=classStart();if(n.t==='classStart'&&n!==cs||m.t==='classStart'&&m!==cs)continue}
+      const[x2,y2]=w2s(m.x,m.y);
+      ctx.strokeStyle=alloc.has(n.id)&&alloc.has(a)?'#d9a441':(hp.has(n.id)||hp.has(a))&&(hp.has(n.id)||alloc.has(n.id))&&(hp.has(a)||alloc.has(a))?'#6aa8e0':'#3a3026';
+      ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke()}}
+  for(const n of T.nodes){if(!visibleAsc(n))continue;const[x,y]=w2s(n.x,n.y);const r=radius(n)*view.z*devicePixelRatio;
+    if(x<-50||y<-50||x>cv.width+50||y>cv.height+50)continue;
+    const on=alloc.has(n.id);let hit=false;
+    if(words.length){const hay=(n.n+' '+n.s.join(' ')+' '+(n.me||[]).map(m=>m.stats.join(' ')).join(' ')).toLowerCase();hit=words.every(w=>hay.includes(w))}
+    ctx.beginPath();
+    if(n.t==='jewel'){ctx.rect(x-r,y-r,2*r,2*r)}else ctx.arc(x,y,Math.max(r,1.5),0,Math.PI*2);
+    ctx.fillStyle=on?(n.t==='keystone'?'#ffcf6a':n.t==='notable'?'#f0b850':'#c89640'):hp.has(n.id)?'#2f5a85':n.t==='mastery'?'#1d2a22':'#2a231c';
+    ctx.fill();ctx.lineWidth=Math.max(1,(n.t==='normal'?3:6)*view.z*devicePixelRatio);
+    ctx.strokeStyle=hit?'#6df0ff':on?'#ffe7a8':n.t==='keystone'?'#b38b4a':n.t==='notable'?'#8f7344':n.t==='mastery'?'#5a8a62':'#55483a';ctx.stroke();
+    if(hit){ctx.beginPath();ctx.arc(x,y,r+8*view.z*devicePixelRatio+3,0,Math.PI*2);ctx.strokeStyle='rgba(109,240,255,.6)';ctx.lineWidth=2;ctx.stroke()}
+    if(view.z>0.25&&(n.t==='notable'||n.t==='keystone')){ctx.fillStyle=on?'#ffe7a8':'#9c8d77';ctx.font=`${11*devicePixelRatio}px system-ui`;ctx.textAlign='center';ctx.fillText(n.n,x,y-r-4*devicePixelRatio)}}
+}
+// client-side path preview (same rules as the server)
+function traversable(n){if(!n||n.t==='mastery')return false;if(n.t==='classStart')return n===classStart();if(n.asc)return n.asc===B.ascendancy||n.asc===B.bloodline;return true}
+function pathTo(t){const alloc=new Set(B.tree.nodes);if(alloc.has(t.id))return[];
+  if(t.t==='mastery'){if(B.tree.nodes.some(i=>N[i]&&N[i].g===t.g))return[t.id];return null}
+  const prev=new Map();const q=[];for(const a of alloc){prev.set(a,null);q.push(a)}
+  while(q.length){const c=q.shift();for(const nb of (N[c]?N[c].a:[])){if(prev.has(nb))continue;const m=N[nb];if(!traversable(m))continue;if(!!N[c].asc!==!!m.asc)continue;prev.set(nb,c);
+    if(nb===t.id){const p=[];let x=nb;while(x!=null&&!alloc.has(x)){p.push(x);x=prev.get(x)}return p.reverse()}q.push(nb)}}return null}
+function nodeAt(px,py){const[wx,wy]=s2w(px,py);let best=null,bd=1e18;for(const n of T.nodes){if(!visibleAsc(n))continue;const d=(n.x-wx)**2+(n.y-wy)**2;const r=Math.max(radius(n),8/view.z);if(d<r*r&&d<bd){bd=d;best=n}}return best}
+let drag=null;
+cv.addEventListener('mousedown',e=>{drag={x:e.clientX,y:e.clientY,vx:view.x,vy:view.y,moved:false}});
+window.addEventListener('mouseup',async e=>{if(drag&&!drag.moved&&e.target===cv&&B){const r=cv.getBoundingClientRect();const n=nodeAt(e.clientX-r.left,e.clientY-r.top);if(n)await clickNode(n)}drag=null});
+cv.addEventListener('mousemove',e=>{const r=cv.getBoundingClientRect();
+  if(drag){const dx=e.clientX-drag.x,dy=e.clientY-drag.y;if(Math.abs(dx)+Math.abs(dy)>3)drag.moved=true;view.x=drag.vx-dx/view.z;view.y=drag.vy-dy/view.z;draw();return}
+  const n=nodeAt(e.clientX-r.left,e.clientY-r.top);const tip=$('#tip');
+  if(n!==hoverNode){hoverNode=n;hoverPath=n&&B&&!B.tree.nodes.includes(n.id)?(pathTo(n)||[]):[];draw()}
+  if(!n){tip.style.display='none';return}
+  const on=B&&B.tree.nodes.includes(n.id);let h=`<div class="nn">${esc(n.n)}</div><div class="muted">${n.t}${n.asc?' · '+n.asc:''} · id ${n.id}</div>`;
+  h+=n.s.map(s=>`<div>${esc(s)}</div>`).join('');
+  if(n.me){const sel=B&&B.tree.masteries[n.id];h+=n.me.map(m=>`<div style="color:${sel==m.effect?'#ffd98a':'#9c8d77'}">• ${esc(m.stats.join(' / '))}</div>`).join('')}
+  h+=`<div class="cost">${on?'คลิกเพื่อลบ':hoverPath.length?'ใช้ '+hoverPath.length+' แต้ม · คลิกเพื่อเพิ่ม':'ไปไม่ถึง'}</div>`;
+  tip.innerHTML=h;tip.style.display='block';tip.style.left=Math.min(e.clientX-r.left+16,r.width-350)+'px';tip.style.top=Math.min(e.clientY-r.top+16,r.height-160)+'px'});
+cv.addEventListener('wheel',e=>{e.preventDefault();const r=cv.getBoundingClientRect();const[wx,wy]=s2w(e.clientX-r.left,e.clientY-r.top);
+  view.z=Math.min(1.2,Math.max(0.03,view.z*(e.deltaY<0?1.15:1/1.15)));const[nx,ny]=s2w(e.clientX-r.left,e.clientY-r.top);view.x+=wx-nx;view.y+=wy-ny;draw()},{passive:false});
+async function clickNode(n){if(B.tree.nodes.includes(n.id)){if(n.t==='mastery'){return pickMastery(n)}await call('deallocate',{name:cur,nodes:[n.id]})}
+  else if(n.t==='mastery'){return pickMastery(n)}else{await call('allocate',{name:cur,nodes:[n.id]})}await loadBuild(cur)}
+function pickMastery(n){modal(`<h3>${esc(n.n)}</h3>`+n.me.map(m=>`<button class="opt" data-e="${m.effect}">${esc(m.stats.join(' / '))}</button>`).join('')+
+  (B.tree.nodes.includes(n.id)?'<button class="opt" data-e="x" style="color:#e0625a">ลบ mastery นี้</button>':'')+'<div class="row"><button onclick="closeModal()">ยกเลิก</button></div>');
+  $('#mbox').querySelectorAll('.opt').forEach(b=>b.onclick=async()=>{closeModal();if(b.dataset.e==='x')await call('deallocate',{name:cur,nodes:[n.id]});else await call('allocate',{name:cur,nodes:[n.id],mastery_effect:+b.dataset.e});loadBuild(cur)})}
+// ---------------- side panel
+document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>{tab=b.dataset.t;document.querySelectorAll('#tabs button').forEach(x=>x.classList.toggle('on',x===b));render()});
+function rarityClass(t){return /Rarity: UNIQUE/.test(t)?'u':/Rarity: RARE/.test(t)?'r':/Rarity: MAGIC/.test(t)?'m':''}
+function render(){const p=$('#pane');if(!B){p.innerHTML='<div class="card">ยังไม่มีบิ้ว — กด “＋ ใหม่” หรือให้ Claude สร้างผ่าน MCP/CLI</div>';return}
+  const st=S.stats;let h='';
+  if(tab==='sum'){const res=st.resistances;
+    h+=`<div class="card"><h3>${esc(S.name)} — ${esc(S.ascendancy||S.class)} Lv ${S.level}</h3>
+    <div class="grid"><div class="stat"><b>${st.life}</b><span>Life</span></div><div class="stat"><b>${st.energy_shield}</b><span>Energy Shield</span></div><div class="stat"><b>${st.mana}</b><span>Mana</span></div>
+    <div class="stat"><b>${st.armour}</b><span>Armour</span></div><div class="stat"><b>${st.evasion}</b><span>Evasion</span></div><div class="stat"><b>${S.points.passives}/${S.points.passives_available}</b><span>Passive · Asc ${S.points.ascendancy}/8</span></div>
+    <div class="stat"><b>${st.attributes.str}</b><span>Str</span></div><div class="stat"><b>${st.attributes.dex}</b><span>Dex</span></div><div class="stat"><b>${st.attributes.int}</b><span>Int</span></div></div>
+    <div class="row">${['Fire','Cold','Lightning','Chaos'].map(k=>`<span class="tag ${res[k].effective>=res[k].max||k==='Chaos'&&res[k].effective>=0?'res-ok':'res-bad'}">${k} ${res[k].effective}%/${res[k].max}%</span>`).join('')}</div>
+    <div class="muted">ค่าประมาณเร็ว (ไม่มี DPS/บัฟ) — กด Export PoB เพื่อดูตัวเลขจริงใน Path of Building</div></div>`;
+    if(S.problems.length)h+=`<div class="card"><h3>⚠ ต้องแก้</h3>${S.problems.map(x=>`<div class="prob">${esc(x)}</div>`).join('')}</div>`;
+    h+=`<div class="card"><h3>Keystones</h3>${S.keystones.map(k=>`<span class="tag">${esc(k)}</span>`).join('')||'<span class="muted">—</span>'}
+    <h3 style="margin-top:8px">Ascendancy</h3>${S.ascendancy_nodes.map(k=>`<span class="tag">${esc(k)}</span>`).join('')||'<span class="muted">—</span>'}
+    <h3 style="margin-top:8px">Notables (${S.notables.length})</h3>${S.notables.map(k=>`<span class="tag">${esc(k)}</span>`).join('')}</div>`;
+    if(Object.keys(S.masteries).length)h+=`<div class="card"><h3>Masteries</h3>${Object.entries(S.masteries).map(([k,v])=>`<div><b>${esc(k)}</b>: ${esc(v)}</div>`).join('')}</div>`;
+    h+=`<div class="card"><h3>สกิลหลัก</h3>${S.skills.filter(s=>s.main).map(s=>s.gems.map(g=>`<span class="tag">${esc(g)}</span>`).join('')).join('')||'<span class="muted">—</span>'}</div>`;}
+  if(tab==='items'){h+='<div class="card"><h3>อุปกรณ์</h3>';
+    const slots=['Weapon 1','Weapon 2','Helmet','Body Armour','Gloves','Boots','Amulet','Ring 1','Ring 2','Belt','Flask 1','Flask 2','Flask 3','Flask 4','Flask 5'];
+    for(const s of slots){const t=B.items[s];h+=`<div class="slot"><span class="muted" style="width:90px">${s}</span><span class="nm ${t?rarityClass(t):''}" style="flex:1" onclick="this.parentNode.nextElementSibling.classList.toggle('open')">${t?esc(S.items[s]):'<span class=muted>ว่าง</span>'}</span>
+      <span><button onclick="equipUnique('${s}')" title="ใส่ unique">U</button> <button onclick="equipText('${s}')" title="วางข้อความไอเทม">✎</button>${t?` <button onclick="unequip('${s}')">✕</button>`:''}</span></div><div class="item">${esc(t||'')}</div>`}
+    h+='</div><div class="card"><h3>Jewel sockets</h3>';
+    for(const [id,nm] of Object.entries(S.jewel_sockets)){const t=B.jewels[id];h+=`<div class="slot"><span class="muted">socket ${id}</span><span class="nm ${t?rarityClass(t):''}" style="flex:1">${t?esc(nm):'<span class=muted>ว่าง</span>'}</span><span><button onclick="equipUnique('${id}')">U</button> <button onclick="equipText('${id}')">✎</button>${t?` <button onclick="unequip('${id}')">✕</button>`:''}</span></div>`}
+    if(!Object.keys(S.jewel_sockets).length)h+='<span class="muted">ยังไม่ได้เอา jewel socket บนต้นไม้</span>';h+='</div>'}
+  if(tab==='skills'){for(const g of S.skills){h+=`<div class="card"><h3>${g.main?'★ ':''}${esc(g.label||g.slot||'กลุ่ม '+g.index)}</h3>${g.gems.map(x=>`<span class="tag">${esc(x)}</span>`).join('')}
+      ${g.warnings.map(w=>`<div class="prob">${esc(w)}</div>`).join('')}<div class="row"><button onclick="setMain(${g.index})">ตั้งเป็นหลัก</button><button onclick="rmGroup(${g.index})">ลบ</button></div></div>`}
+    h+=`<div class="card"><h3>เพิ่มกลุ่มเจม</h3><input id="gemIn" style="width:100%" placeholder="Fireball, Spell Echo, Elemental Focus"><div class="row"><select id="gemSlot"><option value="">(ไม่ระบุช่อง)</option>${['Body Armour','Helmet','Gloves','Boots','Weapon 1','Weapon 2'].map(s=>`<option>${s}</option>`).join('')}</select><button class="pri" onclick="addGroup()">เพิ่ม</button></div><div class="muted">คั่นชื่อเจมด้วย ,</div></div>`}
+  if(tab==='tree'){h+=`<div class="card"><h3>ค้นหาและเพิ่ม passive</h3><div class="row"><input id="pq" style="flex:1" placeholder="เช่น life leech / Acrobatics"><button onclick="searchPass()">ค้นหา</button></div><div id="pres"></div></div>
+    <div class="card"><h3>ต้นไม้</h3><div class="row"><button onclick="centerOn(classStart());draw()">ไปจุดเริ่ม</button><button onclick="if(confirm('ล้าง passive ทั้งหมด?'))call('reset_tree',{name:cur}).then(()=>loadBuild(cur))">ล้างต้นไม้</button></div></div>`}
+  if(tab==='notes'){h+=`<div class="card"><h3>โน้ตบิ้ว</h3><textarea id="notes" style="width:100%;height:300px">${esc(B.notes||'')}</textarea><div class="row"><button class="pri" onclick="saveNotes()">บันทึก</button></div></div>`}
+  p.innerHTML=h}
+async function searchPass(){const r=await call('search_passives',{query:$('#pq').value,limit:40});$('#pres').innerHTML=r.results.map(n=>`<div class="slot"><span style="flex:1"><b>${esc(n.name)}</b> <span class="muted">${n.type}</span><br><span class="muted">${esc(n.stats.join(' · '))}</span></span><span><button onclick="goNode(${n.id})">👁</button> <button onclick="addNode(${n.id})">＋</button></span></div>`).join('')||'<span class="muted">ไม่พบ</span>'}
+function goNode(id){const n=N[id];if(n){view.x=n.x;view.y=n.y;view.z=Math.max(view.z,.3);draw()}}
+async function addNode(id){const n=N[id];if(n&&n.t==='mastery')return pickMastery(n);await call('allocate',{name:cur,nodes:[id]});loadBuild(cur)}
+async function addGroup(){const gems=$('#gemIn').value.split(',').map(s=>s.trim()).filter(Boolean);if(!gems.length)return;const r=await call('add_skill_group',{name:cur,gems,slot:$('#gemSlot').value||null});if(r.warnings.length)alert(r.warnings.join('\n'));loadBuild(cur)}
+async function setMain(i){await call('set_main_skill',{name:cur,index:i});loadBuild(cur)}
+async function rmGroup(i){await call('remove_skill_group',{name:cur,index:i});loadBuild(cur)}
+async function unequip(s){await call('unequip',{name:cur,slot:s});loadBuild(cur)}
+async function saveNotes(){await call('set_build',{name:cur,notes:$('#notes').value});loadBuild(cur)}
+function equipUnique(slot){modal(`<h3>ใส่ Unique → ${slot}</h3><div class="row"><input id="uq" style="flex:1" placeholder="ชื่อหรือ mod เช่น Tabula / life leech"><button onclick="srchU('${slot}')">ค้นหา</button></div><div id="ures"></div><div class="row"><button onclick="closeModal()">ปิด</button></div>`);$('#uq').focus();$('#uq').onkeydown=e=>{if(e.key==='Enter')srchU(slot)}}
+async function srchU(slot){const r=await call('search_uniques',{query:$('#uq').value,limit:30});$('#ures').innerHTML=r.results.map((u,i)=>`<button class="opt" data-n="${esc(u.name)}"><b class="u">${esc(u.name)}</b> <span class="muted">${esc(u.base)}</span><br><span class="muted">${esc(u.mods.slice(0,4).join(' · '))}</span></button>`).join('')||'ไม่พบ';
+  $('#ures').querySelectorAll('.opt').forEach(b=>b.onclick=async()=>{await call('equip_unique',{name:cur,slot,unique:b.dataset.n});closeModal();loadBuild(cur)})}
+function equipText(slot){modal(`<h3>วางข้อความไอเทม → ${slot}</h3><p class="muted">Ctrl+C ไอเทมในเกม หรือคัดลอกจาก PoB แล้ววางที่นี่</p><textarea id="itxt"></textarea><div class="row"><button class="pri" id="iok">ใส่</button><button onclick="closeModal()">ยกเลิก</button></div>`);
+  $('#iok').onclick=async()=>{await call('equip_text',{name:cur,slot,text:$('#itxt').value});closeModal();loadBuild(cur)}}
+function modal(h){$('#mbox').innerHTML=h;$('#modal').style.display='flex'}
+function closeModal(){$('#modal').style.display='none'}
+$('#modal').onclick=e=>{if(e.target.id==='modal')closeModal()};
+async function newBuild(){modal(`<h3>สร้างบิ้วใหม่</h3><div class="row"><input id="nbn" placeholder="ชื่อบิ้ว" style="flex:1"></div><div class="row"><select id="nbc">${$('#ascSel').innerHTML}</select><span class="muted">Lv</span><input id="nbl" type="number" value="90" style="width:70px"></div><div class="row"><button class="pri" id="nbok">สร้าง</button><button onclick="closeModal()">ยกเลิก</button></div>`);
+  $('#nbok').onclick=async()=>{const n=$('#nbn').value.trim();if(!n)return;const[c,a]=$('#nbc').value.split('|');await call('new_build',{name:n,class_name:c,ascendancy:a||null,level:+$('#nbl').value});closeModal();loadBuild.centered=false;await refreshList(n);loadBuild(n)}}
+async function setLevel(){await call('set_build',{name:cur,level:+$('#lvl').value});loadBuild(cur)}
+async function setAsc(){const[c,a]=$('#ascSel').value.split('|');await call('set_build',{name:cur,class_name:c,ascendancy:a||null});loadBuild(cur)}
+async function exportCode(){const r=await call('export_pob',{name:cur});modal(`<h3>Path of Building code</h3><p class="muted">PoB → Import/Export Build → วางโค้ด → Import</p><textarea id="ec" readonly>${esc(r.code)}</textarea><div class="row"><button class="pri" onclick="navigator.clipboard.writeText($('#ec').value);this.textContent='คัดลอกแล้ว ✓'">คัดลอก</button><button onclick="closeModal()">ปิด</button></div>`)}
+async function importCode(){modal(`<h3>Import จาก PoB</h3><p class="muted">วางโค้ด PoB หรือลิงก์ pobb.in / pastebin</p><textarea id="ic"></textarea><div class="row"><input id="icn" placeholder="ตั้งชื่อ" style="flex:1"><button class="pri" id="icok">Import</button><button onclick="closeModal()">ยกเลิก</button></div>`);
+  $('#icok').onclick=async()=>{const n=$('#icn').value.trim()||'Imported';const r=await call('import_pob',{code:$('#ic').value,name:n});if(r.warnings&&r.warnings.length)alert(r.warnings.join('\n'));closeModal();loadBuild.centered=false;await refreshList(n);loadBuild(n)}}
+$('#buildSel').onchange=e=>{loadBuild.centered=false;loadBuild(e.target.value)};
+// live refresh: Claude edits the build file through MCP/CLI -> page updates
+async function poll(){try{const r=await (await fetch('/api/mtime?name='+encodeURIComponent(cur||''))).json();$('#live').textContent='● live';$('#live').style.color='#7fc46a';
+  const opts=[...$('#buildSel').options].map(o=>o.value);if(r.builds.join()!==opts.join()&&r.builds.length)await refreshList(cur||r.builds[0]);
+  if(!cur&&r.builds.length){await loadBuild(r.builds[0])}else if(cur&&r.mtime&&r.mtime!==mtime){await loadBuild(cur)}}catch(e){$('#live').textContent='● offline';$('#live').style.color='#e0625a'}setTimeout(poll,2000)}
+(async()=>{await loadTree();window.addEventListener('resize',resize);resize();let last=null;try{last=localStorage.getItem('poeb.cur')}catch(e){}await refreshList(last);
+  const bs=$('#buildSel').value;if(bs&&bs!=='(ยังไม่มีบิ้ว)')await loadBuild(bs);else{render();view.z=0.035}draw();poll()})();
+</script>
+</body>
+</html>
