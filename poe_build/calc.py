@@ -84,6 +84,26 @@ def norm_mod(m, source=None):
     return out
 
 
+def init_moddb(db):
+    """PoB calcs.initModDB: base mods every actor (player, enemy, minion) has."""
+    C = {"type": "Condition"}
+    db.new("MovementSpeed", "INC", -30, "Base", 0, 0, dict(C, var="Maimed"))
+    db.new("DamageTaken", "INC", 10, "Base", MF("Attack"), 0, dict(C, var="Intimidated"))
+    db.new("DamageTaken", "INC", 10, "Base", MF("Spell"), 0, dict(C, var="Unnerved"))
+    db.new("Damage", "MORE", -10, "Base", 0, 0, dict(C, var="Debilitated"))
+    db.new("MovementSpeed", "MORE", -20, "Base", 0, 0, dict(C, var="Debilitated"))
+    db.new("Condition:Burning", "FLAG", True, "Base", 0, 0, dict(C, var="Ignited"))
+    db.new("Condition:Poisoned", "FLAG", True, "Base", 0, 0, {"type": "MultiplierThreshold", "var": "PoisonStack", "threshold": 1})
+    for flag in ("Blind:Blinded", "Chill:Chilled", "Freeze:Frozen", "Fortify:Fortify", "Fortified:Fortified",
+                 "Onslaught:Onslaught", "UnholyMight:UnholyMight", "ChaoticMight:ChaoticMight", "Tailwind:Tailwind",
+                 "Adrenaline:Adrenaline", "Fanaticism:Fanaticism"):
+        name, var = flag.split(":")
+        db.new(name, "FLAG", True, "Base", 0, 0, dict(C, var=var))
+    db.new("ShockStacksMax", "BASE", 1)
+    db.new("BleedStacksMax", "BASE", 1)
+    db.new("ChargeDuration", "BASE", 10)
+
+
 # ======================================================================== ModDB
 class ModDB:
     def __init__(self, actor, parent=None):
@@ -766,6 +786,8 @@ class Calculator:
         player.other, enemy.other = enemy, player
         self.player, self.enemy = player, enemy
         db = player.moddb
+        init_moddb(db)
+        init_moddb(enemy.moddb)
         cls = data.classes()[b.class_id]
         level = max(1, min(100, b.level))
         db.multipliers["Level"] = level
@@ -1250,6 +1272,11 @@ class Calculator:
                 f |= MF("WeaponRanged") if wt in ("Bow", "Wand") else MF("WeaponMelee")
             else:
                 f |= MF("Unarmed")
+        if mode in ("ignite", "bleed", "poison"):
+            # PoB dotCfg for ailments: Dot|Ailment + weapon flags (+MeleeHit for melee); keywords minus Hit
+            weapon_mask = MF("WeaponMask") or 0x2FFF0000
+            f = MF("Dot") | MF("Ailment") | (f & weapon_mask) | (MF("MeleeHit") if "melee" in fl else 0)
+            kw &= ~KF("Hit")
         for d in dmg_types:
             kw |= KF(d)
         return {"flags": f, "kw": kw, "skillName": skill["name"], "skillId": skill["skillId"],
@@ -1580,61 +1607,92 @@ class Calculator:
         dr_max = 90
         bd = getattr(self, "bd", {"pen": 0})
         cfgi = getattr(self, "cfg_in", {})
-        for el in ("Physical", "Fire", "Cold", "Lightning", "Chaos"):
-            is_ele = el in ELEMENTAL
-            if el == "Physical":
-                resist = 0
-            else:
-                resist = out[el + "Resist"]
-            pen = float(cfgi.get(f"enemy{el}Pen", bd.get("pen", 0) if is_ele else 0) or 0)
-            res_mult = 1 - (resist - pen) / 100
-            red_names = [el + "DamageReduction"] + (["ElementalDamageReduction"] if is_ele else [])
-            ov = db.override(None, el + "DamageReduction")
-            reduction = ov if ov is not None else db.sum("BASE", None, *red_names)
-            reduction = min(reduction, dr_max)
-            overwhelm = float(cfgi.get("enemyPhysicalOverwhelm", 0) or 0) if el == "Physical" else 0
-            if el == "Physical":
-                armour_pct = 0 if db.flag(None, "ArmourDoesNotApplyToPhysicalDamageTaken") else 100
-            else:
-                armour_pct = min(db.sum("BASE", None, "ArmourAppliesTo" + el + "DamageTaken"), 100)
-            eff_armour = armour * armour_pct / 100
-            tnames = ["DamageTaken", el + "DamageTaken", "DamageTakenWhenHit", el + "DamageTakenWhenHit"] + \
-                (["ElementalDamageTaken"] if is_ele else [])
-            taken = max((1 + db.sum("INC", None, *tnames) / 100) * db.more(None, *tnames), 0)
-            enames = ["Damage", el + "Damage"] + (["ElementalDamage"] if is_ele else [])
-            enemy_mult = (1 + edb.sum("INC", None, *enames) / 100) * edb.more(None, *enames)
-            pool = life + (es if (el != "Chaos" or ci or db.flag(None, "ChaosNotBypassEnergyShield")
-                                  or db.flag(None, "EnergyShieldProtectsFromChaos")) else 0)
-            if ci:
-                pool = es + (0 if el == "Chaos" else 1)
-            if mom:
-                pool = min(pool / (1 - mom / 100), pool + mana_pool) if mom < 100 else pool + mana_pool
+        types = ("Physical", "Lightning", "Cold", "Fire", "Chaos")
+        # Petrified Blood / Progenesis style loss prevention (PoB calcLifeHitPoolWithLossPrevention)
+        prevented = min(db.sum("BASE", None, "LifeLossPrevented"), 100)
+        below_half = db.sum("BASE", None, "LifeLossBelowHalfPrevented")
+        half = life * 0.5
+        life_pool = (max(life - half, 0) / (1 - prevented / 100) +
+                     min(life, half) / (1 - below_half / 100) / (1 - prevented / 100)) if prevented < 100 and below_half < 100 else life * 100
+        out["LifeHitPool"] = rnd(life_pool)
 
-            def taken_from(raw):
-                ar = eff_armour / (eff_armour + 5 * raw * res_mult) * 100 if eff_armour > 0 and raw > 0 else 0
-                tot = min(dr_max, min(dr_max, ar) + reduction)
-                red_mult = 1 - max(min(dr_max, tot - overwhelm), 0) / 100
-                return raw * res_mult * red_mult * taken
-            if el == "Chaos" and ci:
-                out[el + "MaximumHitTaken"] = float("inf")
-                continue
-            if taken_from(1e9) <= 0:
-                out[el + "MaximumHitTaken"] = float("inf")
-                continue
-            if eff_armour > 0:
-                lo, hi = 0.0, 1.0
-                while taken_from(hi) < pool:
-                    hi *= 2
-                for _ in range(80):
-                    mid = (lo + hi) / 2
-                    if taken_from(mid) > pool:
-                        hi = mid
-                    else:
-                        lo = mid
-                raw = lo
+        def params(el):
+            is_ele = el in ELEMENTAL
+            resist = 0 if el == "Physical" else out[el + "Resist"]
+            pen = float(cfgi.get(f"enemy{el}Pen", bd.get("pen", 0) if is_ele else 0) or 0)
+            ov = db.override(None, el + "DamageReduction")
+            red = ov if ov is not None else db.sum("BASE", None, el + "DamageReduction", *(["ElementalDamageReduction"] if is_ele else []))
+            red = min(red, dr_max)
+            ow = float(cfgi.get("enemyPhysicalOverwhelm", 0) or 0) if el == "Physical" else 0
+            if el == "Physical":
+                apct = 0 if db.flag(None, "ArmourDoesNotApplyToPhysicalDamageTaken") else 100
             else:
-                raw = pool / taken_from(1.0)
-            out[el + "MaximumHitTaken"] = rnd(raw / enemy_mult) if enemy_mult > 0 else float("inf")
+                apct = min(db.sum("BASE", None, "ArmourAppliesTo" + el + "DamageTaken"), 100)
+            tn = ["DamageTaken", el + "DamageTaken", "DamageTakenWhenHit", el + "DamageTakenWhenHit"] + (["ElementalDamageTaken"] if is_ele else [])
+            taken = max((1 + db.sum("INC", None, *tn) / 100) * db.more(None, *tn), 0)
+            return 1 - (resist - pen) / 100, red, ow, armour * apct / 100, taken
+
+        P = {el: params(el) for el in types}
+
+        def mitigate(el, raw):
+            res_mult, red, ow, earm, taken = P[el]
+            ar = earm / (earm + 5 * raw * res_mult) * 100 if earm > 0 and raw > 0 else 0
+            tot = min(dr_max, min(dr_max, ar) + red)
+            return raw * res_mult * (1 - max(min(dr_max, tot - ow), 0) / 100) * taken
+
+        for el in types:
+            # damage shifting: "X% of Physical Damage from Hits taken as Fire Damage"
+            shift = {}
+            for dst in types:
+                if dst == el:
+                    continue
+                names = [f"{el}DamageTakenAs{dst}", f"{el}DamageFromHitsTakenAs{dst}"]
+                if el in ELEMENTAL:
+                    names += [f"ElementalDamageTakenAs{dst}", f"ElementalDamageFromHitsTakenAs{dst}"]
+                v = db.sum("BASE", None, *names)
+                if v:
+                    shift[dst] = v / 100
+            tot_shift = sum(shift.values())
+            if tot_shift > 1:
+                shift = {k: v / tot_shift for k, v in shift.items()}
+                tot_shift = 1
+            parts = {el: 1 - tot_shift, **shift}
+            if ci and el == "Chaos" and parts.get("Chaos", 0) == 1:
+                out[el + "MaximumHitTaken"] = float("inf")
+                continue
+            enames = ["Damage", el + "Damage"] + (["ElementalDamage"] if el in ELEMENTAL else [])
+            enemy_mult = (1 + edb.sum("INC", None, *enames) / 100) * edb.more(None, *enames)
+
+            def pool_for(dst):
+                p = life_pool + (es if (dst != "Chaos" or ci or db.flag(None, "ChaosNotBypassEnergyShield")
+                                       or db.flag(None, "EnergyShieldProtectsFromChaos")) else 0)
+                if ci:
+                    p = es
+                if mom:
+                    p = min(p / (1 - mom / 100), p + mana_pool) if mom < 100 else p + mana_pool
+                return p
+
+            def used(raw):
+                # fraction of the relevant pool consumed (chaos may bypass ES, so check each part's pool)
+                worst = 0
+                tot = sum(mitigate(d, raw * f) for d, f in parts.items() if f)
+                for d, f in parts.items():
+                    if f:
+                        worst = max(worst, tot / pool_for(d))
+                return worst
+            if used(1e12) <= 0:
+                out[el + "MaximumHitTaken"] = float("inf")
+                continue
+            lo, hi = 0.0, 1.0
+            while used(hi) < 1:
+                hi *= 2
+            for _ in range(80):
+                mid = (lo + hi) / 2
+                if used(mid) > 1:
+                    hi = mid
+                else:
+                    lo = mid
+            out[el + "MaximumHitTaken"] = rnd(lo / enemy_mult) if enemy_mult > 0 else float("inf")
         pool = life + es
         out["TotalEHPPool"] = pool
 
@@ -1801,12 +1859,13 @@ class Calculator:
         if not is_dot and dtype != "Physical":
             pen = sdb.sum("BASE", cfg, dtype + "Penetration") + (sdb.sum("BASE", cfg, "ElementalPenetration") if dtype in ELEMENTAL else 0)
         eff_res = max(-200, res - pen) if res - pen < res or pen == 0 else res - pen
-        taken_inc = edb.sum("INC", None, "DamageTaken", dtype + "DamageTaken") + (edb.sum("INC", None, "ElementalDamageTaken") if dtype in ELEMENTAL else 0)
-        taken_more = edb.more(None, "DamageTaken", dtype + "DamageTaken") * (edb.more(None, "ElementalDamageTaken") if dtype in ELEMENTAL else 1)
+        ecfg = {"flags": cfg.get("flags", 0), "kw": cfg.get("kw", 0)} if cfg else None
+        taken_inc = edb.sum("INC", ecfg, "DamageTaken", dtype + "DamageTaken") + (edb.sum("INC", ecfg, "ElementalDamageTaken") if dtype in ELEMENTAL else 0)
+        taken_more = edb.more(ecfg, "DamageTaken", dtype + "DamageTaken") * (edb.more(ecfg, "ElementalDamageTaken") if dtype in ELEMENTAL else 1)
         if is_dot:
-            taken_inc += edb.sum("INC", None, "DamageTakenOverTime", dtype + "DamageTakenOverTime")
+            taken_inc += edb.sum("INC", ecfg, "DamageTakenOverTime", dtype + "DamageTakenOverTime")
         else:
-            taken_inc += edb.sum("INC", None, "DamageTakenWhenHit", dtype + "DamageTakenWhenHit")
+            taken_inc += edb.sum("INC", ecfg, "DamageTakenWhenHit", dtype + "DamageTakenWhenHit")
         # shock
         shock = 0
         if edb.get_condition("Shocked", None):
@@ -1814,6 +1873,62 @@ class Calculator:
             shock = min(shock * (1 + sdb.sum("INC", cfg, "EnemyShockEffect") / 100), 50)
         taken = (1 + (taken_inc + shock) / 100) * taken_more
         return (1 - eff_res / 100) * taken, eff_res
+
+    def calc_ignite(self, skill, sdb, main, comb):
+        """PoB CalcOffence ignite: crits always ignite, stack potential, roll average, ailment crit chance."""
+        hcfg = main["cfg"]
+        edb = self.enemy.moddb
+        if sdb.flag(hcfg, "CannotIgnite"):
+            return None
+        avoid = 0 if edb.flag(None, "IgniteImmune", "ElementalAilmentImmune") else \
+            1 - min(edb.sum("BASE", None, "AvoidIgnite", "AvoidAilments", "AvoidElementalAilments"), 100) / 100
+        if not avoid:
+            return None
+        on_hit = min(100, sdb.sum("BASE", hcfg, "EnemyIgniteChance") + edb.sum("BASE", None, "SelfIgniteChance")) * avoid
+        on_crit = on_hit if sdb.flag(hcfg, "CritsDontAlwaysIgnite") else 100 * avoid
+        crit = 0 if sdb.flag(hcfg, "NeverCrit") else comb["crit_chance"]
+        if on_hit + (on_crit if crit else 0) <= 0:
+            return None
+        dcfg = self._cfg(skill, "ignite")
+        def mod(d, *names):
+            return (1 + sdb.sum("INC", d, *names) / 100) * sdb.more(d, *names)
+        rate = (mod(hcfg, "IgniteBurnFaster") + edb.sum("INC", None, "SelfIgniteBurnFaster") / 100) / mod(hcfg, "IgniteBurnSlower")
+        dur_mod = max(mod(dcfg, "EnemyIgniteDuration", "EnemyAilmentDuration", "EnemyElementalAilmentDuration", "DamagingAilmentDuration")
+                      * (1 + edb.sum("INC", None, "SelfIgniteDuration", "SelfAilmentDuration", "SelfElementalAilmentDuration") / 100), 0)
+        duration = 4 * dur_mod / rate
+        chance = on_hit / 100 * (1 - crit / 100) + on_crit / 100 * crit / 100
+        stacks = comb["hit_chance"] / 100 * chance * duration * comb["speed"]
+        max_stacks = 1
+        potential = stacks / max_stacks
+        roll = (stacks - (max_stacks - 1) / 2) / (stacks + 1) * 100 if potential > 1 else 50
+        can = {"Fire": not sdb.flag(hcfg, "FireCannotIgnite"),
+               "Physical": sdb.flag(hcfg, "PhysicalCanIgnite"), "Lightning": sdb.flag(hcfg, "LightningCanIgnite"),
+               "Cold": sdb.flag(hcfg, "ColdCanIgnite"), "Chaos": sdb.flag(hcfg, "ChaosCanIgnite")}
+        src = {}
+        for is_crit in (False, True):
+            c = dict(dcfg, skillCond={"CriticalStrike": is_crit})
+            tmin = tmax = 0
+            for dst, chains in main["buckets"].items():
+                if not can.get(dst) or sdb.flag(hcfg, "DealNo" + dst, "DealNoDamage"):
+                    continue
+                for chain, (mn, mx) in chains.items():
+                    if mn or mx:
+                        m, _, _ = self._type_mult(sdb, dict(c), chain, "ignite")
+                        tmin += mn * m
+                        tmax += mx * m
+            ov = sdb.override(c, "DotMultiplier")
+            dm = 1 + (ov if ov is not None else sdb.sum("BASE", c, "DotMultiplier") + sdb.sum("BASE", c, "FireDotMultiplier")) / 100
+            src[is_crit] = (tmin + (tmax - tmin) * roll / 100) * dm
+        a_crit = 100 * (1 - (1 - crit / 100) ** max(1, stacks))
+        from_hit = on_hit * (1 - a_crit / 100)
+        from_crit = on_crit * a_crit / 100
+        if from_hit + from_crit <= 0:
+            return None
+        base = (src[False] * from_hit + src[True] * from_crit) / (from_hit + from_crit) * 0.9
+        res = self._enemy_mult("Fire", sdb, dcfg, is_dot=True)[0]
+        dps = base * mod(dcfg, "AilmentEffect") * rate * min(stacks, max_stacks) * res
+        return {"chance": rnd(chance * 100, 2), "chance_on_crit": on_crit, "stacks": rnd(stacks, 2),
+                "duration": rnd(duration, 2), "dps": rnd(min(dps, 35791394), 1)}
 
     def calc_offence_core(self, skill):
         notes = list(self.notes)
@@ -1955,7 +2070,7 @@ class Calculator:
             dps = avg * speed * hit_chance / 100 * dps_mult
             results.append({"hand": hand, "per_type": per_type, "average_hit": avg, "crit_chance": crit,
                             "crit_multiplier": crit_multi, "hit_chance": hit_chance, "speed": speed, "dps": dps,
-                            "ailment_base": ailment_base, "cfg": cfg, "avg_nc": avg_nc})
+                            "ailment_base": ailment_base, "cfg": cfg, "avg_nc": avg_nc, "buckets": buckets})
         # combine hands (alternating attacks)
         if len(results) == 2:
             r1, r2 = results
@@ -2064,8 +2179,7 @@ class Calculator:
             else:
                 res["dps"] = rnd(tot, 1) if chance >= 100 or hits_ps * chance / 100 * dur >= 1 else rnd(tot * min(1, hits_ps * chance / 100 * dur), 1)
             return res
-        ign = ailment("ignite", ["Fire"] + (["Physical", "Lightning", "Cold", "Chaos"] if sdb.flag(main["cfg"], "AllDamageCanIgnite") else []),
-                      "EnemyIgniteChance", 0.9, 4, "single")
+        ign = self.calc_ignite(skill, sdb, main, comb) if "hit" in fl else None
         if ign:
             out["ignite"] = ign
         if is_attack or sdb.flag(main["cfg"], "SpellsCanBleed"):
@@ -2183,6 +2297,7 @@ class MinionCalculator(Calculator):
         self.player = Actor("minion")
         self.player.other = p.enemy
         db = self.player.moddb
+        init_moddb(db)
         db.conditions.update({"Combat": True, "Effective": True})
         lvl = self.summon["stats"].get("base_display_minion_actor_level") or self.summon["row"].get("levelRequirement") or 1
         lvl = int(min(max(lvl, 1), 100))

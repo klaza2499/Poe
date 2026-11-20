@@ -30,6 +30,7 @@ python -m poe_build set_config --name "..." --values '{"usePowerCharges": true, 
 python -m poe_build set_gem --name "..." --group 1 --gem "Spell Echo" --level 21 --quality 20
 python -m poe_build inspect_item --unique "Kaom's Heart"    # how each mod line is parsed
 python -m poe_build import_character --account "Name#1234" --character "MyChar"
+python -m poe_build set_flasks --name "..." --active "Flask 1" "Flask 2"   # which flasks count (default: all equipped)
 python -m poe_build save_loadout --name "..." --loadout "Leveling"   # also switch_loadout / list_loadouts
 python -m poe_build set_config --name "..." --values '{"customMods": "+100 to maximum Life\n10% more Damage"}'  # PoB custom modifiers
 python -m poe_build export_pob --name "..."                 # code to import into Path of Building

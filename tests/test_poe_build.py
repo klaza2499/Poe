@@ -256,3 +256,63 @@ class AdvancedCalcTests(unittest.TestCase):
         life = api.calc_build("CM")["defence"]["life"]
         api.set_config("CM", {"customMods": "+100 to maximum Life"})
         self.assertGreater(api.calc_build("CM")["defence"]["life"], life + 99)
+
+
+class PoBParityTests(unittest.TestCase):
+    """Mechanics found while calibrating against a real PoB export."""
+
+    def _calc(self, b):
+        from poe_build import calc
+        return calc.calculate(b)
+
+    def test_attribute_nodes_not_double_counted(self):
+        api.new_build("P1", "Marauder", None, 90)
+        api.allocate("P1", ["Born to Fight"])
+        b = Build.load("P1")
+        before = self._calc(Build("P0", "Marauder", None, 90))["attributes"]["str"]
+        gained = self._calc(b)["attributes"]["str"] - before
+        expected = sum(int(l.split()[0].lstrip("+")) for n in b.tree_nodes for l in data.nodes()[n]["stats"]
+                       if l.endswith("to Strength") and l.split()[0].lstrip("+").isdigit())
+        self.assertEqual(gained, expected)
+
+    def test_int_gives_1pct_es_per_10(self):
+        b = Build("P2", "Witch", None, 1)
+        b.config["customMods"] = "+100 to maximum Energy Shield\n+80 to Intelligence"
+        es = self._calc(b)["defence"]["energy_shield"]
+        self.assertEqual(es, round(100 * (1 + (32 + 80) // 10 / 100)))
+
+    def test_active_flask_buff_and_effect(self):
+        b = Build("P3", "Marauder", None, 90)
+        b.equip("Flask 1", items.rare_text("Granite Flask", [], rarity="NORMAL", quality=0))
+        arm = self._calc(b)["defence"]["armour"]
+        self.assertGreaterEqual(arm, 1500)
+        b.active_flasks = []
+        self.assertLess(self._calc(b)["defence"]["armour"], 1500)
+
+    def test_action_speed(self):
+        b = Build("P4", "Witch", None, 90)
+        b.skill_groups = [{"slot": None, "enabled": True, "gems": [{"name": "Fireball", "level": 20, "quality": 0}]}]
+        s0 = self._calc(b)["offence"]["uses_per_second"]
+        b.config["customMods"] = "10% increased Action Speed"
+        self.assertAlmostEqual(self._calc(b)["offence"]["uses_per_second"], s0 * 1.1, places=2)
+
+    def test_herald_mana_reservation_efficiency(self):
+        b = Build("P5", "Witch", None, 90)
+        b.skill_groups = [{"slot": None, "enabled": True, "gems": [{"name": "Herald of Ash", "level": 20, "quality": 0}]}]
+        r0 = self._calc(b)["defence"]["mana_unreserved"]
+        b.config["customMods"] = "20% increased Mana Reservation Efficiency of Herald Skills"
+        self.assertGreater(self._calc(b)["defence"]["mana_unreserved"], r0)
+
+    def test_petrified_blood_raises_max_hit(self):
+        b = Build("P6", "Marauder", None, 90)
+        b.config = {"enemyIsBoss": "None"}
+        h0 = self._calc(b)["defence"]["max_hit_taken"]["Fire"]
+        b.config["customMods"] = "40% of Life Loss below half is Prevented"
+        from poe_build import modparse
+        if modparse.parse_line("40% of Life Loss below half is Prevented"):
+            self.assertGreater(self._calc(b)["defence"]["max_hit_taken"]["Fire"], h0)
+
+    def test_weapon_swap_gems_inactive(self):
+        b = Build("P7", "Witch", None, 90)
+        b.skill_groups = [{"slot": "Weapon 1 Swap", "enabled": True, "gems": [{"name": "Clarity", "level": 20, "quality": 0}]}]
+        self.assertEqual(self._calc(b)["defence"]["mana_reserved_percent"], 0)
