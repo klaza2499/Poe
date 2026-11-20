@@ -49,6 +49,7 @@ class Build:
         self.config: dict = {}
         self.loadouts: dict = {}
         self.active_flasks: list = []
+        self.cluster_nodes = None  # allocated cluster-jewel passives (PoB ids >= 0x10000); None = all
         self.active_loadout = None
 
     # ------------------------------------------------ helpers
@@ -201,6 +202,7 @@ class Build:
             "items": self.items, "jewels": {str(k): v for k, v in self.jewels.items()},
             "skills": self.skill_groups, "mainSkill": self.main_group, "notes": self.notes, "config": self.config,
             "loadouts": self.loadouts, "activeLoadout": self.active_loadout, "activeFlasks": self.active_flasks,
+            "clusterNodes": self.cluster_nodes,
         }
 
     @classmethod
@@ -220,6 +222,7 @@ class Build:
         b.notes = d.get("notes", "")
         b.config = d.get("config", {})
         b.loadouts = d.get("loadouts", {})
+        b.cluster_nodes = d.get("clusterNodes")
         b.active_flasks = list(d.get("activeFlasks", [s for s in b.items if s.startswith("Flask")]))
         b.active_loadout = d.get("activeLoadout")
         return b
@@ -328,7 +331,7 @@ class Build:
         spec = ET.SubElement(tr, "Spec", {
             "title": self.name, "treeVersion": data.tree()["version"], "classId": str(self.class_id),
             "ascendClassId": str(self.ascend_id), "secondaryAscendClassId": str(bloodline_id),
-            "nodes": ",".join(str(n) for n in sorted(sp.alloc)),
+            "nodes": ",".join(str(n) for n in sorted(sp.alloc) + sorted(self.cluster_nodes or [])),
             "masteryEffects": ",".join(f"{{{k},{v}}}" for k, v in sorted(sp.masteries.items())),
             "clusterHashFormatVersion": "2",
         })
@@ -401,8 +404,10 @@ class Build:
                     warnings.append(f"build tree version {spec.get('treeVersion')} != data {data.tree()['version']}; unknown nodes dropped")
                 ids = [int(x) for x in re.findall(r"\d+", spec.get("nodes", ""))]
                 known = [i for i in ids if i in data.nodes()]
-                if len(known) != len(ids):
-                    warnings.append(f"{len(ids) - len(known)} node ids not in current tree (cluster jewel nodes etc.)")
+                b.cluster_nodes = sorted(i for i in ids if i >= 0x10000)
+                unknown = len(ids) - len(known) - len(b.cluster_nodes)
+                if unknown:
+                    warnings.append(f"{unknown} node ids not in the current tree")
                 b.tree_nodes = known
                 b.masteries = {int(m): int(e) for m, e in re.findall(r"\{(\d+),(\d+)\}", spec.get("masteryEffects", ""))}
                 sec = int(spec.get("secondaryAscendClassId", 0) or 0)

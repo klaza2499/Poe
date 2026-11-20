@@ -6,12 +6,16 @@ import re
 from . import data
 
 SLOTS = ["Weapon 1", "Weapon 2", "Helmet", "Body Armour", "Gloves", "Boots", "Amulet", "Ring 1", "Ring 2",
-         "Belt", "Flask 1", "Flask 2", "Flask 3", "Flask 4", "Flask 5", "Weapon 1 Swap", "Weapon 2 Swap"]
+         "Belt", "Flask 1", "Flask 2", "Flask 3", "Flask 4", "Flask 5", "Weapon 1 Swap", "Weapon 2 Swap",
+         "Graft 1", "Graft 2", "Head", "Body", "Arm", "Leg"]
 
 SLOT_TYPES = {
     "Helmet": {"Helmet"}, "Body Armour": {"Body Armour"}, "Gloves": {"Gloves"}, "Boots": {"Boots"},
     "Amulet": {"Amulet"}, "Ring 1": {"Ring"}, "Ring 2": {"Ring"}, "Belt": {"Belt"},
-    **{f"Flask {i}": {"Flask"} for i in range(1, 6)},
+    **{f"Flask {i}": {"Flask", "Tincture"} for i in range(1, 6)},
+    "Graft 1": {"Graft"}, "Graft 2": {"Graft"},
+    # Viscera (PoB "Head/Body/Arm/Leg" slots): the base's viscera_* tag decides the slot
+    "Head": {"Viscera"}, "Body": {"Viscera"}, "Arm": {"Viscera"}, "Leg": {"Viscera"},
 }
 WEAPON_TYPES = {"One Handed Sword", "Thrusting One Handed Sword", "One Handed Axe", "One Handed Mace", "Sceptre",
                 "Wand", "Dagger", "Claw", "Two Handed Sword", "Two Handed Axe", "Two Handed Mace", "Staff",
@@ -32,7 +36,8 @@ def canon_slot(slot: str) -> str:
              "off hand": "Weapon 2", "shield": "Weapon 2", "quiver": "Weapon 2", "helm": "Helmet",
              "body": "Body Armour", "chest": "Body Armour", "armour": "Body Armour", "glove": "Gloves",
              "boot": "Boots", "amulet": "Amulet", "ammy": "Amulet", "ring": "Ring 1", "belt": "Belt",
-             "flask": "Flask 1"}
+             "flask": "Flask 1", "graft": "Graft 1", "viscera head": "Head", "viscera body": "Body",
+             "viscera arm": "Arm", "viscera leg": "Leg"}
     for s in SLOTS:
         if data.norm(s) == n:
             return s

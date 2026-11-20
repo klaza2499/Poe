@@ -316,3 +316,39 @@ class PoBParityTests(unittest.TestCase):
         b = Build("P7", "Witch", None, 90)
         b.skill_groups = [{"slot": "Weapon 1 Swap", "enabled": True, "gems": [{"name": "Clarity", "level": 20, "quality": 0}]}]
         self.assertEqual(self._calc(b)["defence"]["mana_reserved_percent"], 0)
+
+    def test_item_keystone_also_allocated_applies_twice(self):
+        # PoB modLib.mergeKeystones adds an item-granted keystone even if the tree has it too
+        from poe_build import calc
+        api.new_build("P8", "Marauder", None, 95)
+        api.allocate("P8", ["Avatar of Fire"])
+        b = Build.load("P8")
+
+        def conv(bb):
+            c = calc.Calculator(bb)
+            c.run()
+            return c.player.moddb.sum("BASE", None, "PhysicalDamageConvertToFire")
+        self.assertEqual(conv(b), 50)
+        b.equip("Amulet", items.unique_text("Xoph's Blood"))
+        self.assertEqual(conv(b), 100)
+
+    def test_viscera_slots(self):
+        b = Build("P9", "Marauder", None, 90)
+        b.equip("Body", "Rarity: NORMAL\nGreater Molten Core\nImplicits: 1\n+2% to maximum Fire Resistance")
+        self.assertEqual(self._calc(b)["defence"]["resistances"]["Fire"]["max"], 77)
+        with self.assertRaises(ValueError):
+            b.equip("Head", items.rare_text("Lion Pelt", []))
+
+    def test_cluster_allocation_subset(self):
+        b = Build("P10", "Witch", None, 90)
+        sock = next(k for k, v in data.nodes().items() if v["type"] == "jewel" and v.get("clusterSocket")
+                    and not v.get("isClusterInner") and v["clusterSocket"].get("size") == 2)
+        b.tree_nodes = list(b.tree_nodes) + [sock]
+        b.jewels[sock] = ("Rarity: RARE\nX\nLarge Cluster Jewel\nImplicits: 3\nAdds 8 Passive Skills\n"
+                          "Added Small Passive Skills grant: 12% increased Fire Damage")
+        self.assertEqual(self._calc(b)["cluster_points"], 8)
+        # PoB subgraph ids: 0x10000 + large index<<6 + sizeIndex<<4 + slot; allocate just two small passives
+        info = data.misc()["clusterJewels"]["jewels"]["Large Cluster Jewel"]
+        base = 0x10000 + (data.nodes()[sock]["clusterSocket"].get("index", 0) << 6) + (info["sizeIndex"] << 4)
+        b.cluster_nodes = [base + i for i in info["smallIndicies"][:2]]
+        self.assertEqual(self._calc(b)["cluster_points"], 2)

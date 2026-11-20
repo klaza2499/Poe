@@ -914,25 +914,29 @@ class Calculator:
             if nid not in spec.alloc:
                 continue
             if "Cluster Jewel" in itemsmod.parse_item(text)["base"]:
-                self.apply_cluster_jewel(text, nid)
+                if not data.nodes()[nid].get("isClusterInner"):
+                    self.apply_cluster_jewel(text, nid)  # nested ones are handled by their parent
                 continue
             it, base, mods, _, _, unp = parse_item_mods(text, "Jewel")
             for u in unp:
                 self.unparsed.append(("jewel", str(nid), u))
             db.add_list(mods, "Jewel")
         # keystones granted by items / jewels ("Avatar of Fire", "Conduit" ...) -> apply the keystone node's stats
-        tree_keys = {data.nodes()[n]["name"] for n in spec.alloc if data.nodes()[n]["type"] == "keystone"}
-        for ks in set(v for v in db.list(None, "Keystone") if isinstance(v, str)) - tree_keys:
+        # PoB modLib.mergeKeystones: every distinct keystone granted by an item adds the keystone's stats once,
+        # even if the same keystone is also allocated on the tree (PoB then counts it twice, e.g. Avatar of Fire).
+        for ks in sorted(set(v for v in db.list(None, "Keystone") if isinstance(v, str))):
             node = next((n for n in data.nodes().values() if n["type"] == "keystone" and n["name"] == ks), None)
             if not node:
                 self.unparsed.append(("keystone", ks, "keystone not found in tree data"))
                 continue
             for st in node.get("stats", []):
                 r = modparse.parse_line(st.replace("\n", " "))
-                if r is None:
-                    self.unparsed.append(("keystone", ks, st))
-                else:
-                    db.add_list(r, "Keystone:" + ks)
+                parts = [(st, r)] if r is not None else [(x, modparse.parse_line(x)) for x in st.split("\n")]
+                for line, r in parts:
+                    if r is None:
+                        self.unparsed.append(("keystone", ks, line))
+                    else:
+                        db.add_list(r, "Keystone:" + ks)
         # anointed notables ("Allocates Longshot")
         anointed = []
         for slot, (it, base) in self.item_list.items():
@@ -1024,65 +1028,141 @@ class Calculator:
             db.conditions["Using" + it["base"].replace(" ", "")] = True
 
     # -------------------------------------------------------------- cluster jewels
-    def apply_cluster_jewel(self, text, nid):
-        """Cluster jewel: assume every passive it adds is allocated (how almost all builds use them)."""
+    def apply_cluster_jewel(self, text, nid, parent_id=None):
+        """Cluster jewel subgraph like PoB PassiveSpec:BuildSubgraph (same node ids), applying the allocated
+        notables / small passives and recursing into jewels in its sockets."""
+        import re as _re
         db = self.player.moddb
         it = itemsmod.parse_item(text)
-        size = it["base"].split()[0]
-        info = data.misc()["clusterJewels"]["jewels"].get(it["base"], {})
-        count = info.get("maxNodes", 0)
-        notables, small, sockets, other = [], [], 0, []
+        cjd = data.misc()["clusterJewels"]
+        info = cjd["jewels"].get(it["base"])
+        sock = data.nodes()[nid]
+        ej = sock.get("clusterSocket") or {}
+        if not info:
+            return
+        node_count = sockets = None
+        notables, added, inc_effect, other = [], [], 0, []
+        skill_id = it["props"].get("Cluster Jewel Skill")
+        if it["props"].get("Cluster Jewel Node Count", "").isdigit():
+            node_count = int(it["props"]["Cluster Jewel Node Count"])
+        small_line = None
         for line in itemsmod.active_mod_lines(it):
             line = modparse.roll(line)
             low = line.lower()
-            if low.startswith("added small passive skills grant: ") or low.startswith("added small passive skills also grant: "):
-                small.append(line.split(": ", 1)[1])
+            if low.startswith("added small passive skills grant: "):
+                small_line = line.split(": ", 1)[1]
+                continue
+            if low.startswith("added small passive skills also grant: "):
+                added.append(line.split(": ", 1)[1])
+                continue
+            m = _re.match(r"^Added Small Passive Skills have (\d+)% increased Effect$", line, _re.I)
+            if m:
+                inc_effect += int(m.group(1))
+                continue
+            m = _re.match(r"^(\d+) Added Passive Skills? (?:are|is a) Jewel Sockets?$", line, _re.I)
+            if m:
+                sockets = int(m.group(1))
                 continue
             r = modparse.parse_line(line)
             if r and r[0]["name"] == "ClusterJewelNotable":
                 notables.append(r[0]["value"])
-            elif r and r[0]["name"] == "JewelData" and isinstance(r[0]["value"], dict) and \
-                    r[0]["value"].get("key") == "clusterJewelNodeCount":
-                count = r[0]["value"]["value"]
-            elif r and r[0]["name"] == "JewelData" and isinstance(r[0]["value"], dict) and \
-                    r[0]["value"].get("key") == "clusterJewelSocketCount":
-                sockets = r[0]["value"]["value"]
-            elif r and r[0]["name"] in ("JewelData", "ClusterJewelSkill"):
+            elif r and r[0]["name"] == "JewelData" and isinstance(r[0]["value"], dict):
+                key = r[0]["value"].get("key")
+                if key == "clusterJewelNodeCount":
+                    node_count = node_count or r[0]["value"]["value"]
+                elif key == "clusterJewelSocketCount":
+                    sockets = r[0]["value"]["value"]
+            elif r and r[0]["name"] in ("ClusterJewelSkill",):
                 continue
             elif r is None:
-                m = __import__("re").match(r"^(\d+) Added Passive Skills? (?:are|is a) Jewel Sockets?$", line)
-                if m:
-                    sockets = int(m.group(1))
-                else:
-                    self.unparsed.append(("cluster", str(nid), line))
+                self.unparsed.append(("cluster", str(nid), line))
             else:
                 other += r
         db.add_list(other, f"Cluster:{it['name'] or it['base']}")
-        name_to_node = {n["name"]: (k, n) for k, n in data.nodes().items() if n["type"] in ("notable", "keystone") and not n.get("adj")}
-        for nm in notables:
-            k_n = name_to_node.get(nm)
-            if not k_n:
+        sockets = sockets or 0
+        order = cjd.get("notableSortOrder", {})
+        notables.sort(key=lambda n: order.get(n, 1e9))
+        size = info["size"]
+        node_count = node_count or (sockets + len(notables))
+        small_count = node_count - sockets - len(notables)
+        # ids (PoB: 0-3 index, 4-5 size, 6-8 large index, 9-10 medium index, bit 16 signal)
+        base_id = parent_id if parent_id is not None else 0x10000
+        if ej.get("size") == 2:
+            base_id += ej.get("index", 0) << 6
+        elif ej.get("size") == 1:
+            base_id += ej.get("index", 0) << 9
+        node_id = base_id + (info["sizeIndex"] << 4)
+        # socket / notable / small slot indices
+        sock_idx = {6} if (size == "Large" and sockets == 1) else set(info["socketIndicies"][:sockets])
+        n_idx = []
+        for i in info["notableIndicies"]:
+            if len(n_idx) == len(notables):
+                break
+            if size == "Medium":
+                if sockets == 0 and len(notables) == 2:
+                    i = {6: 4, 10: 8}.get(i, i)
+                elif node_count == 4:
+                    i = {10: 9, 2: 3}.get(i, i)
+            if i not in sock_idx:
+                n_idx.append(i)
+        n_idx.sort()
+        used = set(sock_idx) | set(n_idx[:len(notables)])
+        s_idx = []
+        for i in info["smallIndicies"]:
+            if len(s_idx) == small_count:
+                break
+            if size == "Medium":
+                if node_count == 5 and i == 4:
+                    i = 3
+                elif node_count == 4:
+                    i = {8: 9, 4: 3}.get(i, i)
+            if i not in used:
+                s_idx.append(i)
+        alloc = getattr(self.build, "cluster_nodes", None)
+
+        def allocated(idx):
+            return alloc is None or (node_id + idx) in alloc
+        name_to_node = {n["name"]: n for n in data.nodes().values() if n["type"] in ("notable", "keystone") and not n.get("adj")}
+        n_notables = n_small = 0
+        for nm, idx in zip(notables, n_idx):
+            if not allocated(idx):
+                continue
+            node = name_to_node.get(nm)
+            if not node:
                 self.unparsed.append(("cluster", str(nid), f"notable {nm}"))
                 continue
-            for st in k_n[1].get("stats", []):
+            n_notables += 1
+            for st in node.get("stats", []):
                 r = modparse.parse_line(st.replace("\n", " "))
                 if r is None:
                     self.unparsed.append(("cluster", nm, st))
                 else:
                     db.add_list(r, f"Cluster notable:{nm}")
-        n_small = max(0, count - len(notables) - sockets)
-        for line in small:
-            r = modparse.parse_line(line)
-            if r is None:
-                self.unparsed.append(("cluster", "small passive", line))
+        skill = (info.get("skills") or {}).get(skill_id) or {}
+        small_stats = list(skill.get("stats") or ([small_line] if small_line else [])) + added
+        eff = 1 + inc_effect / 100
+        for idx in s_idx:
+            if not allocated(idx):
                 continue
-            for m in r:
-                if isinstance(m.get("value"), (int, float)) and not isinstance(m.get("value"), bool):
-                    m = dict(m, value=m["value"] * n_small)
-                db.add(m, f"Cluster small passives x{n_small}")
-        self.cluster_points = getattr(self, "cluster_points", 0) + count
-        self.notes.append(f"{size} cluster jewel in socket {nid}: assumed all {count} added passives allocated "
-                          f"({len(notables)} notables, {n_small} small).")
+            n_small += 1
+            for line in small_stats:
+                r = modparse.parse_line(line)
+                if r is None:
+                    self.unparsed.append(("cluster", "small passive", line))
+                    continue
+                for m in r:
+                    if eff != 1 and isinstance(m.get("value"), (int, float)) and not isinstance(m.get("value"), bool):
+                        m = dict(m, value=m["value"] * eff)
+                    db.add(m, "Cluster small passive")
+        # inner jewel sockets are real tree nodes: counted with the tree when allocation is known, else assumed
+        self.cluster_points = getattr(self, "cluster_points", 0) + n_notables + n_small + (sockets if alloc is None else 0)
+        how = "allocated in the build" if alloc is not None else "assumed allocated (all)"
+        self.notes.append(f"{size} cluster jewel in socket {nid}: {n_notables} notables + {n_small} small passives {how}.")
+        # jewels socketed in this cluster's sockets (inner socket nodes are real tree nodes)
+        for inner, jt in self.build.jewels.items():
+            n = data.nodes().get(inner)
+            if n and (n.get("clusterSocket") or {}).get("parent") in (str(nid), nid) and "Cluster Jewel" in itemsmod.parse_item(jt)["base"]:
+                self.apply_cluster_jewel(jt, inner, base_id)
 
     # -------------------------------------------------------------- skills
     def build_skill(self, group, gem_index, main_cfg=False):
