@@ -756,10 +756,11 @@ def list_loadouts(name):
 
 @tool("Choose which flasks are active (counted in calculations), like PoB's flask checkboxes.",
       name=("string", "build name", True),
-      active=("array", "flask slots to activate, e.g. ['Flask 1', 'Flask 3']; [] = none", True))
+      active=("array", "flask slots to activate, e.g. ['Flask 1', 'Flask 3']; ['none'] = no flasks", True))
 def set_flasks(name, active):
     b = _load(name)
-    slots = [itemsmod.canon_slot(x) if not str(x).isdigit() else f"Flask {x}" for x in (active or [])]
+    active = [x for x in (active or []) if str(x).lower() != "none"]
+    slots = [itemsmod.canon_slot(x) if not str(x).isdigit() else f"Flask {x}" for x in active]
     bad = [x for x in slots if not x.startswith("Flask") or x not in b.items]
     if bad:
         raise ValueError(f"no flask equipped in {bad}")
