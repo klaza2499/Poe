@@ -121,6 +121,91 @@ class McpTests(unittest.TestCase):
         self.assertIn("Arc", res[2]["result"]["content"][0]["text"])
 
 
+class ModParseTests(unittest.TestCase):
+    def test_exact_and_template(self):
+        from poe_build import modparse
+        self.assertEqual(modparse.parse_line("37% increased maximum Life"),
+                         [{"name": "Life", "type": "INC", "value": 37, "flags": 0, "kw": 0}])
+        m = modparse.parse_line("Socketed Gems are Supported by Level 20 Spell Echo")[0]
+        self.assertEqual(m["value"]["level"], 20)
+        self.assertIsNone(modparse.parse_line("this is not a real mod"))
+        self.assertEqual(modparse.roll("+(80-90) to maximum Life"), "+85 to maximum Life")
+
+
+class CalcTests(unittest.TestCase):
+    def test_gem_interpolation(self):
+        from poe_build import calc
+        stats, row = calc.gem_stats(calc.skills_data()["Fireball"], 20, 0)
+        self.assertEqual(row["levelRequirement"], 70)
+        self.assertGreater(stats["spell_minimum_base_fire_damage"], 500)
+        self.assertGreater(stats["spell_maximum_base_fire_damage"], stats["spell_minimum_base_fire_damage"])
+
+    def test_spell_build(self):
+        from poe_build import calc
+        api.new_build("C1", "Witch", "Elementalist", 90)
+        api.add_skill_group("C1", ["Fireball"], "Body Armour")
+        base = calc.calculate(Build.load("C1"))
+        self.assertGreater(base["offence"]["hit_dps"], 100)
+        self.assertEqual(base["defence"]["resistances"]["Fire"]["total"], -60)
+        api.add_gems("C1", 1, ["Controlled Destruction"])
+        more = calc.calculate(Build.load("C1"))
+        self.assertGreater(more["offence"]["average_hit"], base["offence"]["average_hit"] * 1.2)
+        self.assertLess(more["offence"]["crit_chance"], base["offence"]["crit_chance"])
+        # enemy settings change damage
+        api.set_config("C1", {"enemyIsBoss": "None"})
+        none = calc.calculate(Build.load("C1"))
+        self.assertGreater(none["offence"]["hit_dps"], more["offence"]["hit_dps"])
+
+    def test_attack_and_local_weapon_mods(self):
+        r = api.inspect_item(text=items.rare_text("Rusted Sword", ["100% increased Physical Damage"], quality=0))
+        w = r["weapon"]
+        from poe_build import data as d
+        base = d.find_base("Rusted Sword")[1]["weapon"]
+        self.assertEqual(w["PhysicalMax"], round(base["PhysicalMax"] * 2))
+        api.new_build("C2", "Duelist", "Slayer", 90)
+        api.equip_text("C2", "Weapon 1", items.rare_text("Jewelled Foil", ["Adds 10 to 20 Physical Damage"]))
+        api.add_skill_group("C2", ["Lacerate"], "Body Armour")
+        r = api.calc_build("C2")
+        self.assertGreater(r["offence"]["hit_dps"], 0)
+        self.assertLess(r["offence"]["hit_chance"], 100.1)
+
+    def test_aura_and_reservation(self):
+        api.new_build("C3", "Templar", "Hierophant", 90)
+        api.add_skill_group("C3", ["Arc"], "Body Armour")
+        before = api.calc_build("C3")["offence"]["hit_dps"]
+        api.add_skill_group("C3", ["Wrath"], "Helmet")
+        r = api.calc_build("C3")
+        self.assertGreater(r["offence"]["hit_dps"], before)
+        self.assertGreater(r["defence"]["mana_reserved_percent"], 0)
+
+    def test_what_if_and_suggest(self):
+        api.new_build("C4", "Witch", "Elementalist", 90)
+        api.add_skill_group("C4", ["Fireball"], "Body Armour")
+        r = api.what_if("C4", allocate=["Heart of Flame"])
+        self.assertGreater(r["changes"]["total_dps"]["change"], 0)
+        s = api.suggest_passives("C4", "life", max_cost=8, limit=3)
+        self.assertTrue(s["best"])
+
+    def test_config_and_compare(self):
+        api.new_build("C5", "Witch")
+        with self.assertRaises(KeyError):
+            api.set_config("C5", {"notARealOption": True})
+        api.set_config("C5", {"usePowerCharges": True})
+        self.assertTrue(api.get_config("C5")["config"]["usePowerCharges"]["value"])
+        api.clone_build("C5", "C6")
+        self.assertIn("metrics", api.compare_builds("C5", "C6"))
+
+    def test_char_item_text(self):
+        from poe_build import charimport
+        t = charimport.item_text({"frameType": 2, "name": "Doom Visor", "typeLine": "Hubris Circlet",
+                                  "baseType": "Hubris Circlet", "ilvl": 84, "implicitMods": [],
+                                  "explicitMods": ["+80 to maximum Life"], "craftedMods": ["+20% to Fire Resistance"],
+                                  "sockets": [{"group": 0, "sColour": "B"}, {"group": 0, "sColour": "R"}]})
+        it = items.parse_item(t)
+        self.assertEqual(it["base"], "Hubris Circlet")
+        self.assertEqual(it["props"]["Sockets"], "B-R")
+
+
 def _id(name, asc=None):
     for nid, n in data.nodes().items():
         if n["name"] == name and (asc is None or n.get("ascendancy") == asc) and n["type"] != "normal":

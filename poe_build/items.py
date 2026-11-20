@@ -77,6 +77,10 @@ def parse_item(text: str) -> dict:
             else:
                 it["props"].setdefault(k, v) if k != "Variant" else it["props"].setdefault("Variants", []).append(v)
             continue
+        rm = re.match(r"^Requires Level (\d+)", l)
+        if rm:
+            it["props"]["Requires Level"] = rm.group(1)
+            continue
         if l in ("Corrupted", "Mirrored", "Split", "Fractured Item", "Synthesised Item", "Shaper Item", "Elder Item",
                  "Crusader Item", "Hunter Item", "Redeemer Item", "Warlord Item", "Searing Exarch Item",
                  "Eater of Worlds Item"):

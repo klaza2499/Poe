@@ -74,7 +74,9 @@ class Handler(BaseHTTPRequestHandler):
                 p = os.path.join(BUILDS_DIR, safe_name(name) + ".json")
                 with open(p, encoding="utf-8") as f:
                     raw = json.load(f)
-                return self._send(200, {"raw": raw, "mtime": os.path.getmtime(p), "summary": api.show_build(name)})
+                from .build import Build
+                return self._send(200, {"raw": raw, "mtime": os.path.getmtime(p),
+                                        "summary": Build.from_dict(raw).summary(with_calc=True)})
             except Exception as e:
                 return self._send(404, {"error": str(e)})
         if u.path == "/api/mtime":

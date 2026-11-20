@@ -209,7 +209,7 @@ class Build:
             return cls.from_dict(json.load(f))
 
     # ------------------------------------------------ summary
-    def summary(self, full=False):
+    def summary(self, full=False, with_calc=False):
         from . import stats
         sp = self.spec()
         st = stats.compute(self)
@@ -231,9 +231,21 @@ class Build:
             "items": {s: _item_label(t) for s, t in self.items.items()},
             "skills": groups,
             "stats": {k: st[k] for k in ("attributes", "life", "mana", "energy_shield", "armour", "evasion", "resistances")},
+            "dps": {k: st["offence"].get(k) for k in ("skill", "total_dps", "hit_dps", "dot_dps", "average_hit",
+                                                        "uses_per_second", "crit_chance", "hit_chance") if k in st["offence"]}
+                   | {k: st["offence"][k]["dps"] for k in ("ignite", "bleed", "poison") if k in st["offence"]},
+            "defence": {k: st["defence"].get(k) for k in ("block", "spell_suppression", "max_hit_taken", "mana_unreserved",
+                                                          "life_regen", "movement_speed")},
             "problems": st["problems"],
             "notes": self.notes,
         }
+        if with_calc:
+            out["offence"] = st["offence"]
+            out["defence_full"] = st["defence"]
+            out["buffs"] = st["buffs"]
+            out["calc_notes"] = st["notes"]
+            out["unparsed_mods"] = st["unparsed_mods"]
+            out["unparsed_count"] = st["unparsed_count"]
         if full:
             out["stat_totals"] = st["stat_totals"]
             out["item_text"] = self.items

@@ -43,6 +43,9 @@ def main(argv=None):
                 kw["nargs"] = "+"
             elif ptype == "integer":
                 kw["type"] = int
+            elif ptype == "object":
+                kw["type"] = json.loads
+                kw["help"] = pdesc + " (JSON)"
             elif ptype == "boolean":
                 kw = {"help": pdesc, "type": lambda s: s.lower() in ("1", "true", "yes", "y")}
             p.add_argument(f"--{pname}", **kw)

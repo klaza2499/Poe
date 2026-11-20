@@ -10,12 +10,19 @@ essence, enchant, cluster jewel, pantheon, minion/spectre, boss
 
 **ทำอะไรได้**
 - 🌳 เพิ่ม passive แค่บอกชื่อ — หาเส้นทางสั้นที่สุดให้อัตโนมัติ, เลือก mastery, ascendancy, bloodline
-- 💎 จัดกลุ่มเจม + เช็คว่า support ใช้กับสกิลได้จริง (กฎ skill type แบบเดียวกับ PoB)
-- 🛡️ ใส่ unique ตามชื่อ หรือสร้าง rare จาก base + mod ที่ roll ได้จริงบน base นั้น / วางข้อความไอเทมจากเกม
-- 📊 คำนวณเร็ว: attribute, life/mana/ES, armour/evasion, resist (หลังโดน -60%), แต้มที่ใช้ และ **รายการปัญหาที่ต้องแก้**
-- 🔁 **Export เป็นโค้ด Path of Building** (ไปดู DPS จริงใน PoB) และ **Import** โค้ด PoB / ลิงก์ pobb.in กลับมาให้ Claude วิเคราะห์
+- 💎 จัดกลุ่มเจม แก้เลเวล/quality + เช็คว่า support ใช้กับสกิลได้จริง (กฎ skill type แบบเดียวกับ PoB)
+- 🛡️ ใส่ unique ตามชื่อ / สร้าง rare จาก base + mod ที่ roll ได้จริง / วางข้อความไอเทมจากเกม
+- ⚔️ **คำนวณ DPS แบบ PoB**: hit DPS (spell / attack / dual wield), conversion & gain as extra, crit, accuracy,
+  penetration, damage over time, ignite / bleed / poison, aura / herald / curse จากกลุ่มเจมอื่น, charges
+  — ใช้ตัวแยก mod ของ PoB เอง (ModCache ~19,000 บรรทัด) และสูตรจากโค้ด PoB
+- 🛡️ คำนวณป้องกัน: life / mana / ES / ward, armour / evasion, resist, block, suppress, regen, mana reservation, **max hit taken**
+- ⚙️ **Config ครบ 591 ตัวเลือกแบบ PoB** (ประเภทบอส, resist ศัตรู, charges, shock, full life, flask …)
+- 🔬 **ลองเปลี่ยนก่อนบันทึก** (`what_if`) — ดูว่า DPS/Life เปลี่ยนเท่าไร, **แนะนำ passive ที่คุ้มที่สุดต่อแต้ม** (`suggest_passives`), เปรียบเทียบบิ้ว
+- 📋 รายการปัญหาที่ต้องแก้: resist ไม่ cap, attribute ไม่พอสำหรับไอเทม/เจม, เลเวลไม่ถึง, แต้มเกิน, mana ไม่พอ
+- 🔁 **Export เป็นโค้ด Path of Building** / **Import** โค้ด PoB, ลิงก์ pobb.in หรือ **ดึงตัวละครจากบัญชี pathofexile.com** (โปรไฟล์ต้องเปิด public)
 
-> ตัวคำนวณในนี้เป็นค่าประมาณ (ไม่มี DPS, ไม่คิดบัฟ/เงื่อนไข) — ตัวเลขละเอียดให้กด Export แล้ววางใน PoB
+> ยังไม่คำนวณ: DPS ของ minion, อัตรา trigger (CoC ฯลฯ), ต้นไม้ cluster jewel / timeless jewel และ unique บางชิ้นที่ PoB เขียนโค้ดพิเศษ
+> — ถ้าบิ้วใช้ของพวกนี้ ให้ Export ไปเช็คใน PoB อีกที (หน้าสรุปจะบอกว่า mod ไหนคำนวณไม่ได้)
 
 ## ใช้กับ Claude
 
@@ -49,7 +56,9 @@ python -m poe_build export_pob --name "RF Jugg"
 
 ดับเบิลคลิก **`run_planner.bat`** (หรือ `python -m poe_build web`) → เปิด http://127.0.0.1:8765
 - ต้นไม้ passive: คลิก node เพื่อเพิ่ม/ลบ (ชี้เมาส์เห็นเส้นทาง + จำนวนแต้ม), ค้นหาไฮไลต์ node
-- แท็บ สรุป / ไอเทม / สกิล / Passive / โน้ต, ปุ่ม Export / Import โค้ด PoB
+- ชี้ node จะเห็น **DPS / Life ที่เพิ่ม-ลด** ทันที (แบบ PoB)
+- แท็บ สรุป (DPS + ป้องกัน) / ไอเทม (ปุ่ม U = unique, R = สร้าง rare, ✎ = วางข้อความ) / สกิล (แก้เลเวล/quality, ปุ่ม ? ดู support ที่ใช้ได้) / Passive / Config / โน้ต
+- ปุ่ม Export / Import โค้ด PoB
 - **อัปเดตสด** — ระหว่างที่ Claude แก้บิ้วผ่าน MCP หน้าเว็บจะเปลี่ยนตามเองทุก 2 วินาที
 
 บิ้วเก็บเป็นไฟล์ JSON ในโฟลเดอร์ `builds/` (ตั้งที่อื่นได้ด้วย env `POE_BUILDS_DIR`) ไม่ต้องติดตั้งอะไรเพิ่ม ใช้แค่ Python 3.10+
@@ -60,6 +69,7 @@ python -m poe_build export_pob --name "RF Jugg"
 tools/update_data.sh 3_30     # ดึงข้อมูลล่าสุดจาก PoB Community แล้วแปลงเป็น poe_build/data/
 ```
 ตัวแปลง (`tools/build_data.py`) แค่ *อ่าน* ไฟล์ Lua ของ PoB เป็นข้อมูล ไม่ได้รันโค้ดใดๆ
+(รวมถึง stat map ของสกิล, ModCache และตัวเลือก Config — แปลงจากข้อความเป็นข้อมูลด้วย `tools/lualit.py` + `tools/luaexpr.py`)
 
 ---
 

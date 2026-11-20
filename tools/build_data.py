@@ -19,6 +19,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lualit  # noqa: E402
+import luaexpr  # noqa: E402
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "poe_build", "data")
 
@@ -393,6 +394,228 @@ def build_misc(src):
     dump("misc", misc)
 
 
+# ---------------------------------------------------------------- calc data
+def _conv(v):
+    """Evaluate Raw PoB expressions (mod()/skill()/flag()/flags) inside a parsed structure."""
+    if isinstance(v, lualit.Raw):
+        try:
+            return luaexpr.evaluate(str(v))
+        except Exception:
+            return None
+    if isinstance(v, dict):
+        return {k: _conv(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_conv(x) for x in v]
+    return v
+
+
+def _statmap_entry(e):
+    """PoB statMap value -> {"mods": [...], "groups": [{"mods": [...], div, mult, value, base}], div, mult, value, base}"""
+    e = _conv(e)
+    if isinstance(e, list):
+        e = {i + 1: x for i, x in enumerate(e)}
+    if not isinstance(e, dict):
+        return None
+    out = {"mods": [], "groups": []}
+    for k, x in e.items():
+        if isinstance(k, int):
+            if isinstance(x, dict) and x.get("k") in ("mod", "skill", "flag"):
+                out["mods"].append(x)
+            elif isinstance(x, (dict, list)):
+                g = x if isinstance(x, dict) else {i + 1: y for i, y in enumerate(x)}
+                grp = {"mods": [y for kk, y in g.items() if isinstance(kk, int) and isinstance(y, dict) and y.get("k")]}
+                for f in ("div", "mult", "value", "base"):
+                    if isinstance(g.get(f), (int, float)) and not isinstance(g.get(f), bool):
+                        grp[f] = g[f]
+                out["groups"].append(grp)
+        elif k in ("div", "mult", "value", "base") and isinstance(x, (int, float)) and not isinstance(x, bool):
+            out[k] = x
+        elif k == "skillFlag":
+            out["skillFlag"] = x
+    return luaexpr.clean(out)
+
+
+def build_calcdata(src):
+    D = os.path.join(src, "Data")
+    flags = luaexpr.load_flags(read(os.path.join(D, "Global.lua")))
+    # global stat map
+    txt = read(os.path.join(D, "SkillStatMap.lua"))
+    i = txt.index("return {")
+    smap = lualit.parse_return_table(txt[i:])
+    statmap = {k: _statmap_entry(v) for k, v in smap.items()}
+    # constants
+    consts = {"flags": flags, "statMap": {k: v for k, v in statmap.items() if v}}
+    mtxt = read(os.path.join(D, "Misc.lua"))
+    for name in ("gameConstants", "characterConstants", "monsterConstants", "monsterEvasionTable",
+                 "monsterArmourTable", "monsterLifeTable", "monsterDamageTable", "monsterAccuracyTable",
+                 "monsterAilmentThresholdTable"):
+        m = re.search(rf"^data\.{name}\s*=\s*", mtxt, re.M)
+        if m:
+            consts[name] = lualit.Parser(mtxt[m.end():]).value()
+    # skills with full levels + stat maps
+    skills = {}
+    for fn in sorted(os.listdir(os.path.join(D, "Skills"))):
+        for sid, sk in lualit.parse_assignments(read(os.path.join(D, "Skills", fn)), "skills").items():
+            if not isinstance(sk, dict):
+                continue
+            e = {"name": sk.get("name"), "support": bool(sk.get("support"))}
+            for k in ("castTime", "baseEffectiveness", "incrementalEffectiveness", "isTrigger", "cannotBeSupported",
+                      "hidden", "fromItem", "fromTree", "minionList", "skillTotemId", "supportGemsOnly"):
+                if sk.get(k) is not None and not isinstance(sk.get(k), lualit.Raw):
+                    e[k] = sk[k]
+            st = sk.get("skillTypes")
+            if isinstance(st, dict):
+                e["skillTypes"] = sorted(str(k).split(".")[-1] for k, v in st.items() if v)
+            for k in ("requireSkillTypes", "addSkillTypes", "excludeSkillTypes"):
+                if sk.get(k):
+                    e[k] = [str(x).split(".")[-1] for x in sk[k]]
+            if isinstance(sk.get("weaponTypes"), dict):
+                e["weaponTypes"] = sorted(k for k, v in sk["weaponTypes"].items() if v)
+            if isinstance(sk.get("baseFlags"), dict):
+                e["baseFlags"] = sorted(k for k, v in sk["baseFlags"].items() if v is True)
+            if isinstance(sk.get("addFlags"), dict):
+                e["addFlags"] = sorted(k for k, v in sk["addFlags"].items() if v is True)
+            if sk.get("parts"):
+                e["parts"] = [p.get("name") for p in sk["parts"] if isinstance(p, dict)]
+            q = sk.get("qualityStats")
+            if isinstance(q, dict):
+                q = q.get("Default") or next(iter(q.values()), [])
+            if q:
+                e["qualityStats"] = q
+            if sk.get("constantStats"):
+                e["constantStats"] = sk["constantStats"]
+            e["stats"] = sk.get("stats") or []
+            if any(sk.get(k) for k in ("preDamageFunc", "initialFunc", "postCritFunc", "preSkillTypeFunc")):
+                e["customCalc"] = True
+            lv = {}
+            levels = sk.get("levels") or {}
+            if isinstance(levels, list):
+                levels = {i: v for i, v in enumerate(levels, 1)}
+            for L, row in levels.items():
+                if not isinstance(L, int):
+                    continue
+                if isinstance(row, list):
+                    row = {i: v for i, v in enumerate(row, 1)}
+                r = {"v": [row.get(i) for i in range(1, len(e["stats"]) + 1)]}
+                for k, v in row.items():
+                    if isinstance(k, str) and not isinstance(v, lualit.Raw):
+                        r[k] = v
+                lv[L] = r
+            e["levels"] = lv
+            if isinstance(sk.get("statMap"), dict):
+                e["statMap"] = {k: m for k, m in ((k, _statmap_entry(v)) for k, v in sk["statMap"].items()) if m}
+            if sk.get("baseMods"):
+                bm = _conv(sk["baseMods"])
+                if isinstance(bm, dict):
+                    bm = [v for k, v in bm.items() if isinstance(k, int)]
+                e["baseMods"] = luaexpr.clean([m for m in bm if isinstance(m, dict) and m.get("k")])
+            skills[sid] = e
+    dump("skills", skills)
+    # mod cache: line -> parsed mods (only lines PoB parsed completely)
+    cache = {}
+    for line, v in lualit.parse_assignments(read(os.path.join(D, "ModCache.lua")), "c").items():
+        if not isinstance(v, list) or not v or not isinstance(v[0], (list, dict)):
+            continue
+        if len(v) > 1 and v[1]:
+            continue  # partially parsed
+        mods = v[0] if isinstance(v[0], list) else [v[0][k] for k in sorted(k for k in v[0] if isinstance(k, int))]
+        out = []
+        for m in mods:
+            if not isinstance(m, dict):
+                continue
+            tags = [m[k] for k in sorted(k for k in m if isinstance(k, int))]
+            e = {"name": m.get("name"), "type": m.get("type"), "value": m.get("value"),
+                 "flags": m.get("flags", 0), "kw": m.get("keywordFlags", 0)}
+            if tags:
+                e["tags"] = tags
+            out.append(lualit.plain(e))
+        if out:
+            cache[line] = out
+    print("  modcache lines:", len(cache))
+    dump("modcache", cache)
+    dump("consts", consts)
+
+
+# ---------------------------------------------------------------- config options
+_COLOR = re.compile(r"\^x[0-9A-Fa-f]{6}|\^\d")
+
+
+def build_config(src):
+    """Extract PoB's Config tab: options + the modifiers each one adds (no code is run)."""
+    path = os.path.join(src, "Modules", "ConfigOptions.lua")
+    txt = read(path)
+    starts = [m.start() for m in re.finditer(r"^\t\{ var = \"", txt, re.M)]
+    section = None
+    sec_pos = [(m.start(), m.group(1)) for m in re.finditer(r'\{ section = "([^"]+)"', txt)]
+    opts = []
+    for i, st in enumerate(starts):
+        body = txt[st: starts[i + 1] if i + 1 < len(starts) else len(txt)]
+        for pos, name in sec_pos:
+            if pos < st:
+                section = name
+        head = body.split("apply = function", 1)[0]
+
+        def attr(k, h=head):
+            m = re.search(rf'\b{k} = "((?:[^"\\]|\\.)*)"', h)
+            return m.group(1) if m else None
+        o = {"var": attr("var"), "type": attr("type"), "label": _COLOR.sub("", attr("label") or "").strip(),
+             "section": section}
+        tip = attr("tooltip")
+        if tip:
+            o["tooltip"] = _COLOR.sub("", tip.replace("\\n", " ").replace("\\t", " "))[:300]
+        m = re.search(r"\blist = (\{\{.*?\}\})", head, re.S)
+        if m:
+            o["list"] = [{"val": a, "label": _COLOR.sub("", b)} for a, b in
+                         re.findall(r'val\s*=\s*"?([^",}]*)"?\s*,\s*label\s*=\s*"([^"]*)"', m.group(1))]
+        for k in ("defaultIndex", "defaultState", "defaultPlaceholderState"):
+            mm = re.search(rf"\b{k} = ([\w.]+)", head)
+            if mm:
+                v = mm.group(1)
+                o[k] = True if v == "true" else False if v == "false" else (float(v) if re.match(r"^-?\d+(\.\d+)?$", v) else v)
+        for k in ("ifCond", "ifEnemyCond", "ifFlag", "ifSkill", "ifOption", "ifMult", "ifStat", "ifEnemyStat"):
+            v = attr(k)
+            if v:
+                o[k] = v
+        mods = []
+        if "apply = function" in body:
+            ab = body.split("apply = function", 1)[1]
+            cond = None
+            for mm in re.finditer(r'(?:(else)?if val == "([^"]*)" then)|(?:\belse\b)|(?:(modList|enemyModList):NewMod\()', ab):
+                if mm.group(2) is not None:
+                    cond = mm.group(2)
+                    continue
+                if mm.group(3) is None:
+                    cond = "__else__"
+                    continue
+                p = lualit.Parser(ab[mm.end() - 1:])
+                try:
+                    ev = luaexpr.Eval(ab[mm.end() - 1:], ["val"])
+                    ev.p.expect("(")
+                    args = []
+                    while not ev.p.is_(")"):
+                        args.append(ev.value())
+                        if ev.p.is_(","):
+                            ev.p.next()
+                except Exception:
+                    continue
+                if len(args) < 3 or not isinstance(args[0], str):
+                    continue
+                rest = args[4:]
+                flags = rest[0] if rest and isinstance(rest[0], int) else 0
+                kw = rest[1] if len(rest) > 1 and isinstance(rest[1], int) else 0
+                tags = [t for t in rest if isinstance(t, dict) and "type" in t]
+                mod = {"target": "enemy" if mm.group(3) == "enemyModList" else "player", "name": args[0],
+                       "type": args[1], "value": args[2], "flags": flags, "kw": kw, "tags": tags}
+                if cond:
+                    mod["when"] = cond
+                mods.append(luaexpr.clean(mod))
+            del p
+        o["mods"] = mods
+        opts.append(o)
+    print("  config options:", len(opts), "with mods:", sum(1 for o in opts if o["mods"]))
+    dump("config", opts)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("src", help="path to PathOfBuilding/src")
@@ -410,6 +633,10 @@ def main():
     build_mods(a.src)
     print("misc")
     build_misc(a.src)
+    print("calc data")
+    build_calcdata(a.src)
+    print("config")
+    build_config(a.src)
     meta = {"treeVersion": a.tree, "source": "PathOfBuildingCommunity/PathOfBuilding (MIT)",
             "gameData": "(c) Grinding Gear Games"}
     with open(os.path.join(OUT, "meta.json"), "w", encoding="utf-8") as f:

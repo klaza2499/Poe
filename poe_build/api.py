@@ -219,7 +219,9 @@ def show_build(name, full=False):
     return _load(name).summary(full=bool(full))
 
 
-@tool("Quick stat estimate for a build: attributes, life/mana/ES, armour/evasion, resists (after -60%), point usage, every stat line summed.",
+@tool("Full stats for a build from the calc engine: main-skill DPS (hit, DoT, ignite/bleed/poison), crit, speed, "
+      "life/mana/ES/ward, armour/evasion, resists, block, suppression, max hit taken, reservation, plus 'problems' "
+      "(uncapped resists, attribute/level requirements, points) and every stat line summed.",
       name=("string", "build name", True))
 def build_stats(name):
     return statsmod.compute(_load(name))
@@ -424,6 +426,300 @@ def import_pob(code, name):
       unique=("string", "unique name", True), variant=("integer", "optional variant", False))
 def unique_text(unique, variant=None):
     return {"text": itemsmod.unique_text(unique, variant)}
+
+
+# ================================================================== calc-powered tools
+def _metrics(b):
+    from . import calc
+    r = calc.calculate(b)
+    o, d = r["offence"], r["defence"]
+    m = {"total_dps": o.get("total_dps", 0), "hit_dps": o.get("hit_dps", 0), "dot_dps": o.get("dot_dps", 0),
+         "ignite_dps": (o.get("ignite") or {}).get("dps", 0), "bleed_dps": (o.get("bleed") or {}).get("dps", 0),
+         "poison_dps": (o.get("poison") or {}).get("dps", 0), "average_hit": o.get("average_hit", 0),
+         "speed": o.get("uses_per_second", 0), "crit_chance": o.get("crit_chance", 0),
+         "life": d["life"], "energy_shield": d["energy_shield"], "mana": d["mana"],
+         "mana_unreserved": d["mana_unreserved"], "armour": d["armour"], "evasion": d["evasion"],
+         "block": d["block"], "spell_suppression": d["spell_suppression"],
+         "str": r["attributes"]["str"], "dex": r["attributes"]["dex"], "int": r["attributes"]["int"]}
+    for el, v in d["resistances"].items():
+        m[f"{el.lower()}_res"] = v["effective"]
+    for k, v in d["max_hit_taken"].items():
+        m[f"max_hit_{k.lower()}"] = v
+    m["ehp"] = d["life"] + d["energy_shield"]
+    return m
+
+
+def _delta(before, after):
+    out = {}
+    for k in before:
+        a, b2 = before.get(k) or 0, after.get(k) or 0
+        if isinstance(a, (int, float)) and isinstance(b2, (int, float)) and abs(b2 - a) > 1e-6:
+            out[k] = {"before": round(a, 1), "after": round(b2, 1), "change": round(b2 - a, 1),
+                      "percent": round((b2 - a) / a * 100, 1) if a else None}
+    return out
+
+
+def _clone(b, name=None):
+    c = Build.from_dict(b.to_dict())
+    if name:
+        c.name = name
+    return c
+
+
+@tool("Calculate a build's DPS and defences in detail (same engine as build_stats, without requirement checks).",
+      name=("string", "build name", True))
+def calc_build(name):
+    from . import calc
+    return calc.calculate(_load(name))
+
+
+@tool("Try changes WITHOUT saving and see the difference in DPS, life, ES, resists, max hit etc. "
+      "Combine any of: allocate/deallocate nodes, equip uniques or item text, change gem levels, config, level.",
+      name=("string", "build name", True),
+      allocate=("array", "nodes to add (ids or names)", False),
+      deallocate=("array", "nodes to remove", False),
+      equip_unique=("object", "{slot: unique name}", False),
+      equip_text=("object", "{slot: item text}", False),
+      add_gems=("object", "{group index: [gem names]} supports/gems to add to existing groups", False),
+      config=("object", "PoB config values to set, e.g. {\"usePowerCharges\": true}", False),
+      level=("integer", "character level", False))
+def what_if(name, allocate=None, deallocate=None, equip_unique=None, equip_text=None, add_gems=None, config=None,
+            level=None):
+    b = _load(name)
+    before = _metrics(b)
+    c = _clone(b)
+    added = c.allocate(list(allocate)) if allocate else []
+    if deallocate:
+        c.deallocate(list(deallocate))
+    for slot, u in (equip_unique or {}).items():
+        c.equip(slot, itemsmod.unique_text(u))
+    for slot, t in (equip_text or {}).items():
+        c.equip(slot, t)
+    for gi, gems in (add_gems or {}).items():
+        grp = c.skill_groups[int(gi) - 1]
+        for g in gems:
+            gd = skillsmod.resolve_gem(g)
+            grp["gems"].append({"name": gd["name"], "level": 20, "quality": 20, "enabled": True})
+    if config:
+        c.config.update(config)
+    if level:
+        c.level = int(level)
+    after = _metrics(c)
+    return {"points_spent": len([n for n in added if data.nodes()[n]["type"] not in ("classStart", "ascendancyStart")]),
+            "changes": _delta(before, after)}
+
+
+_OBJECTIVES = {"dps": "total_dps", "life": "life", "es": "energy_shield", "ehp": "ehp", "armour": "armour",
+               "evasion": "evasion", "mana": "mana", "max_hit": "max_hit_physical", "speed": "speed",
+               "crit": "crit_chance"}
+
+
+@tool("Rank reachable notables/keystones by how much they improve an objective per passive point "
+      "(like PoB's node power). Good for finishing a tree.",
+      name=("string", "build name", True),
+      objective=("string", "dps (default), life, es, ehp, armour, evasion, mana, max_hit, speed, crit", False),
+      max_cost=("integer", "max points to reach a node (default 6)", False),
+      kind=("string", "notable (default), keystone, or any", False),
+      limit=("integer", "number of results (default 10)", False))
+def suggest_passives(name, objective="dps", max_cost=6, kind="notable", limit=10):
+    b = _load(name)
+    key = _OBJECTIVES.get((objective or "dps").lower(), "total_dps")
+    base = _metrics(b)
+    sp = b.spec()
+    cands = []
+    kinds = {"notable", "keystone"} if kind in (None, "any") else {kind}
+    for nid, n in data.nodes().items():
+        if n["type"] not in kinds or nid in sp.alloc or n.get("ascendancy") or n.get("isProxy"):
+            continue
+        try:
+            p = sp.path_to(nid)
+        except Exception:
+            continue
+        if 0 < len(p) <= int(max_cost):
+            cands.append((nid, p))
+    res = []
+    for nid, p in cands:
+        c = _clone(b)
+        c.tree_nodes = sorted(set(c.tree_nodes) | set(p))
+        m = _metrics(c)
+        gain = (m.get(key) or 0) - (base.get(key) or 0)
+        res.append({"id": nid, "name": data.nodes()[nid]["name"], "cost": len(p), "gain": round(gain, 1),
+                    "gain_percent": round(gain / base[key] * 100, 2) if base.get(key) else None,
+                    "per_point": round(gain / len(p), 1), "stats": data.nodes()[nid].get("stats", []),
+                    "side_effects": {k: v for k, v in _delta(base, m).items() if k in ("life", "total_dps", "energy_shield")
+                                     and k != key}})
+    res.sort(key=lambda r: -r["per_point"])
+    return {"objective": key, "current": base.get(key), "candidates_checked": len(cands), "best": res[: int(limit)]}
+
+
+@tool("Compare two saved builds side by side (DPS, defences, resists, attributes).",
+      a=("string", "first build", True), b=("string", "second build", True))
+def compare_builds(a, b):
+    ma, mb = _metrics(_load(a)), _metrics(_load(b))
+    return {"a": a, "b": b, "metrics": {k: {"a": ma[k], "b": mb[k]} for k in ma}, "difference_b_minus_a": _delta(ma, mb)}
+
+
+@tool("Copy a build under a new name (to try variants).", name=("string", "build name", True),
+      new_name=("string", "name for the copy", True))
+def clone_build(name, new_name):
+    c = _clone(_load(name), new_name)
+    c.save()
+    return {"created": new_name}
+
+
+# ---------------------------------------------------------------- gems
+@tool("Change one gem in a skill group: level, quality, enabled, or swap it for another gem.",
+      name=("string", "build name", True), group=("integer", "group index (1-based)", True),
+      gem=("string", "gem name currently in the group", True),
+      level=("integer", "new level", False), quality=("integer", "new quality", False),
+      enabled=("boolean", "enable/disable", False), replace_with=("string", "new gem name", False))
+def set_gem(name, group, gem, level=None, quality=None, enabled=None, replace_with=None):
+    b = _load(name)
+    grp = b.skill_groups[int(group) - 1]
+    target = next((g for g in grp["gems"] if data.norm(g["name"]) == data.norm(skillsmod.resolve_gem(gem)["name"])), None)
+    if not target:
+        raise KeyError(f"{gem} not in group {group}: {[g['name'] for g in grp['gems']]}")
+    if replace_with:
+        target["name"] = skillsmod.resolve_gem(replace_with)["name"]
+    if level is not None:
+        target["level"] = int(level)
+    if quality is not None:
+        target["quality"] = int(quality)
+    if enabled is not None:
+        target["enabled"] = bool(enabled)
+    b.save()
+    return {"group": group, "gems": grp["gems"], "warnings": skillsmod.check_group(grp)}
+
+
+@tool("Add gems to an existing skill group.", name=("string", "build name", True),
+      group=("integer", "group index", True), gems=("array", "gem names", True))
+def add_gems(name, group, gems):
+    b = _load(name)
+    grp = b.skill_groups[int(group) - 1]
+    for g in gems:
+        gd = skillsmod.resolve_gem(g)
+        grp["gems"].append({"name": gd["name"], "level": 20 if gd["maxLevel"] >= 20 else gd["maxLevel"],
+                            "quality": 20, "enabled": True})
+    b.save()
+    return {"gems": [g["name"] for g in grp["gems"]], "warnings": skillsmod.check_group(grp)}
+
+
+@tool("Remove a gem from a skill group.", name=("string", "build name", True),
+      group=("integer", "group index", True), gem=("string", "gem name", True))
+def remove_gem(name, group, gem):
+    b = _load(name)
+    grp = b.skill_groups[int(group) - 1]
+    n = data.norm(skillsmod.resolve_gem(gem)["name"])
+    grp["gems"] = [g for g in grp["gems"] if data.norm(g["name"]) != n]
+    b.save()
+    return {"gems": [g["name"] for g in grp["gems"]]}
+
+
+@tool("Edit a skill group's slot, label or enabled state.", name=("string", "build name", True),
+      group=("integer", "group index", True), slot=("string", "item slot", False),
+      label=("string", "label", False), enabled=("boolean", "enabled", False))
+def edit_skill_group(name, group, slot=None, label=None, enabled=None):
+    b = _load(name)
+    grp = b.skill_groups[int(group) - 1]
+    if slot is not None:
+        grp["slot"] = itemsmod.canon_slot(slot) if slot else None
+    if label is not None:
+        grp["label"] = label
+    if enabled is not None:
+        grp["enabled"] = bool(enabled)
+    b.save()
+    return {"group": grp}
+
+
+# ---------------------------------------------------------------- config
+@tool("Search Path of Building's Config options (enemy boss type/resists, charges, conditions like "
+      "'on full life', 'enemy is shocked', flasks, buffs ...). Returns var names to use with set_config.",
+      query=("string", "words, e.g. 'power charges', 'shocked', 'boss', 'full life'", True),
+      name=("string", "optional build name to show current values", False),
+      limit=("integer", "max results (default 25)", False))
+def search_config(query, name=None, limit=25):
+    from . import calc
+    cur = _load(name).config if name else {}
+    words = data.norm(query).split()
+    out = []
+    for o in calc.config_options():
+        hay = data.norm(" ".join([o.get("var", ""), o.get("label", ""), o.get("section") or "", o.get("tooltip", "")]))
+        if all(w in hay for w in words):
+            e = {"var": o["var"], "type": o["type"], "label": o["label"], "section": o.get("section")}
+            if o.get("list"):
+                e["choices"] = [x["val"] for x in o["list"]]
+            if name:
+                e["current"] = cur.get(o["var"])
+            out.append(e)
+    return {"count": len(out), "results": out[: int(limit)]}
+
+
+@tool("Set PoB Config values on a build (use search_config for var names). "
+      "check -> true/false, count -> number, list -> one of choices. null removes a value.",
+      name=("string", "build name", True),
+      values=("object", "e.g. {\"enemyIsBoss\": \"Uber\", \"usePowerCharges\": true, \"conditionEnemyShocked\": true}", True))
+def set_config(name, values):
+    from . import calc
+    valid = {o["var"]: o for o in calc.config_options()}
+    b = _load(name)
+    for k, v in (values or {}).items():
+        if k not in valid:
+            raise KeyError(f"unknown config var '{k}' (use search_config)")
+        o = valid[k]
+        if v is None:
+            b.config.pop(k, None)
+            continue
+        if o.get("list") and str(v) not in [x["val"] for x in o["list"]]:
+            raise ValueError(f"{k} must be one of {[x['val'] for x in o['list']]}")
+        b.config[k] = v
+    b.save()
+    return {"config": b.config, "dps": _metrics(b)["total_dps"]}
+
+
+@tool("Show a build's current config values.", name=("string", "build name", True))
+def get_config(name):
+    from . import calc
+    b = _load(name)
+    labels = {o["var"]: o["label"] for o in calc.config_options()}
+    return {"config": {k: {"value": v, "label": labels.get(k)} for k, v in b.config.items()},
+            "defaults": "enemyIsBoss=Pinnacle (50% ele / 30% chaos res, level 84) unless set; charges off unless usePowerCharges etc."}
+
+
+# ---------------------------------------------------------------- items
+@tool("Inspect an item: how PoB parses each mod line (modifier names/values), unparsed lines, and local "
+      "weapon DPS / armour values.",
+      text=("string", "item text (or leave empty and give unique)", False),
+      unique=("string", "unique name instead of text", False), slot=("string", "slot (for socketed-gem mods)", False))
+def inspect_item(text=None, unique=None, slot=None):
+    from . import calc
+    if unique:
+        text = itemsmod.unique_text(unique)
+    if not text:
+        raise ValueError("give text or unique")
+    it, base, mods, weapon, armour, unparsed = calc.parse_item_mods(text, slot or "Weapon 1")
+    out = {"name": it["name"], "base": it["base"], "type": base.get("type"), "mods": [
+        {k: m.get(k) for k in ("name", "type", "value", "tags") if m.get(k) not in (None, [])} for m in mods],
+        "unparsed": unparsed}
+    if weapon:
+        w = dict(weapon)
+        w["dps"] = {d: round((weapon.get(d + "Min", 0) + weapon.get(d + "Max", 0)) / 2 * weapon["AttackRate"], 1)
+                    for d in ("Physical", "Fire", "Cold", "Lightning", "Chaos") if weapon.get(d + "Min")}
+        out["weapon"] = w
+    if armour:
+        out["armour"] = armour
+    return out
+
+
+# ---------------------------------------------------------------- character import
+@tool("Import a character from pathofexile.com (profile must be public) and save it as a build.",
+      account=("string", "account name incl. #1234 discriminator if any", True),
+      character=("string", "character name", True), name=("string", "build name (default: character name)", False),
+      realm=("string", "pc (default), xbox, sony", False))
+def import_character(account, character, name=None, realm="pc"):
+    from . import charimport
+    b = charimport.import_character(account, character, name, realm or "pc")
+    b.save()
+    return {"imported": b.name, "warnings": getattr(b, "_import_warnings", []), **b.summary()}
 
 
 def call(name, args):

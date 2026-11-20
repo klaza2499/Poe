@@ -71,7 +71,7 @@ canvas{display:block;width:100%;height:100%;cursor:grab}
   </div>
   <div id="side">
     <div id="tabs">
-      <button data-t="sum" class="on">สรุป</button><button data-t="items">ไอเทม</button><button data-t="skills">สกิล</button><button data-t="tree">Passive</button><button data-t="notes">โน้ต</button>
+      <button data-t="sum" class="on">สรุป</button><button data-t="items">ไอเทม</button><button data-t="skills">สกิล</button><button data-t="tree">Passive</button><button data-t="config">Config</button><button data-t="notes">โน้ต</button>
     </div>
     <div id="pane"></div>
   </div>
@@ -145,7 +145,8 @@ cv.addEventListener('mousemove',e=>{const r=cv.getBoundingClientRect();
   const on=B&&B.tree.nodes.includes(n.id);let h=`<div class="nn">${esc(n.n)}</div><div class="muted">${n.t}${n.asc?' · '+n.asc:''} · id ${n.id}</div>`;
   h+=n.s.map(s=>`<div>${esc(s)}</div>`).join('');
   if(n.me){const sel=B&&B.tree.masteries[n.id];h+=n.me.map(m=>`<div style="color:${sel==m.effect?'#ffd98a':'#9c8d77'}">• ${esc(m.stats.join(' / '))}</div>`).join('')}
-  h+=`<div class="cost">${on?'คลิกเพื่อลบ':hoverPath.length?'ใช้ '+hoverPath.length+' แต้ม · คลิกเพื่อเพิ่ม':'ไปไม่ถึง'}</div>`;
+  h+=`<div class="cost">${on?'คลิกเพื่อลบ':hoverPath.length?'ใช้ '+hoverPath.length+' แต้ม · คลิกเพื่อเพิ่ม':'ไปไม่ถึง'}</div><div class="cost" id="impact">${impactCache[n.id+':'+(B&&B.tree.nodes.length)]||''}</div>`;
+  if(B&&(on||hoverPath.length)&&n.t!=='mastery')queueImpact(n,on);
   tip.innerHTML=h;tip.style.display='block';tip.style.left=Math.min(e.clientX-r.left+16,r.width-350)+'px';tip.style.top=Math.min(e.clientY-r.top+16,r.height-160)+'px'});
 cv.addEventListener('wheel',e=>{e.preventDefault();const r=cv.getBoundingClientRect();const[wx,wy]=s2w(e.clientX-r.left,e.clientY-r.top);
   view.z=Math.min(1.2,Math.max(0.03,view.z*(e.deltaY<0?1.15:1/1.15)));const[nx,ny]=s2w(e.clientX-r.left,e.clientY-r.top);view.x+=wx-nx;view.y+=wy-ny;draw()},{passive:false});
@@ -165,7 +166,20 @@ function render(){const p=$('#pane');if(!B){p.innerHTML='<div class="card">ย�
     <div class="stat"><b>${st.armour}</b><span>Armour</span></div><div class="stat"><b>${st.evasion}</b><span>Evasion</span></div><div class="stat"><b>${S.points.passives}/${S.points.passives_available}</b><span>Passive · Asc ${S.points.ascendancy}/8</span></div>
     <div class="stat"><b>${st.attributes.str}</b><span>Str</span></div><div class="stat"><b>${st.attributes.dex}</b><span>Dex</span></div><div class="stat"><b>${st.attributes.int}</b><span>Int</span></div></div>
     <div class="row">${['Fire','Cold','Lightning','Chaos'].map(k=>`<span class="tag ${res[k].effective>=res[k].max||k==='Chaos'&&res[k].effective>=0?'res-ok':'res-bad'}">${k} ${res[k].effective}%/${res[k].max}%</span>`).join('')}</div>
-    <div class="muted">ค่าประมาณเร็ว (ไม่มี DPS/บัฟ) — กด Export PoB เพื่อดูตัวเลขจริงใน Path of Building</div></div>`;
+    </div>`;
+    const o=S.offence||{},df=S.defence_full||{};const f=x=>x==null?'—':Math.round(x).toLocaleString();
+    h+=`<div class="card"><h3>⚔ ${esc(o.skill||'ยังไม่มีสกิลหลัก')}${o.supports&&o.supports.length?' <span class="muted">+ '+esc(o.supports.join(', '))+'</span>':''}</h3>
+    <div class="grid"><div class="stat"><b style="color:var(--gold2)">${f(o.total_dps)}</b><span>Total DPS</span></div><div class="stat"><b>${f(o.hit_dps)}</b><span>Hit DPS</span></div><div class="stat"><b>${f(o.average_hit)}</b><span>Average hit</span></div>
+    <div class="stat"><b>${o.uses_per_second??'—'}</b><span>ครั้ง/วินาที</span></div><div class="stat"><b>${o.crit_chance??'—'}%</b><span>Crit · x${o.crit_multiplier??''}%</span></div><div class="stat"><b>${o.hit_chance??'—'}%</b><span>Hit chance</span></div></div>
+    <div class="row">${o.dot_dps?`<span class="tag">DoT ${f(o.dot_dps)}</span>`:''}${o.ignite?`<span class="tag">Ignite ${f(o.ignite.dps)}</span>`:''}${o.bleed?`<span class="tag">Bleed ${f(o.bleed.dps)}</span>`:''}${o.poison?`<span class="tag">Poison ${f(o.poison.dps)} (${o.poison.stacks} stacks)</span>`:''}${o.cost&&o.cost.Mana?`<span class="tag">Mana ${o.cost.Mana}</span>`:''}</div>
+    ${o.enemy?`<div class="muted">ศัตรู: ${esc(o.enemy.boss)} Lv${o.enemy.level} · res ${Object.entries(o.enemy.resist).map(([k,v])=>k[0]+':'+v+'%').join(' ')}${o.enemy.curses&&o.enemy.curses.length?' · curse: '+esc(o.enemy.curses.join(', ')):''}</div>`:''}
+    ${(S.buffs||[]).length?`<div class="muted">บัฟ: ${esc(S.buffs.join(', '))}</div>`:''}
+    ${(S.calc_notes||[]).map(n=>`<div class="muted">ℹ ${esc(n)}</div>`).join('')}${o.note?`<div class="muted">ℹ ${esc(o.note)}</div>`:''}</div>
+    <div class="card"><h3>🛡 ป้องกัน</h3><div class="grid">
+    <div class="stat"><b>${df.block??0}%</b><span>Block</span></div><div class="stat"><b>${df.spell_suppression??0}%</b><span>Suppress</span></div><div class="stat"><b>${f(df.mana_unreserved)}</b><span>Mana ว่าง (${df.mana_reserved_percent||0}% จอง)</span></div>
+    <div class="stat"><b>${f(df.life_regen)}</b><span>Life regen/s</span></div><div class="stat"><b>${f(df.es_recharge)}</b><span>ES recharge/s</span></div><div class="stat"><b>${df.movement_speed?Math.round((df.movement_speed-1)*100):0}%</b><span>Move speed</span></div></div>
+    ${df.max_hit_taken?`<div class="muted" style="margin-top:6px">โดนตีสูงสุดได้: ${Object.entries(df.max_hit_taken).map(([k,v])=>k+' '+f(v)).join(' · ')}</div>`:''}
+    ${S.unparsed_count?`<details class="muted"><summary>${S.unparsed_count} mod ที่ยังคำนวณไม่ได้</summary>${(S.unparsed_mods||[]).map(x=>esc(x)).join('<br>')}</details>`:''}</div>`;
     if(S.problems.length)h+=`<div class="card"><h3>⚠ ต้องแก้</h3>${S.problems.map(x=>`<div class="prob">${esc(x)}</div>`).join('')}</div>`;
     h+=`<div class="card"><h3>Keystones</h3>${S.keystones.map(k=>`<span class="tag">${esc(k)}</span>`).join('')||'<span class="muted">—</span>'}
     <h3 style="margin-top:8px">Ascendancy</h3>${S.ascendancy_nodes.map(k=>`<span class="tag">${esc(k)}</span>`).join('')||'<span class="muted">—</span>'}
@@ -175,17 +189,51 @@ function render(){const p=$('#pane');if(!B){p.innerHTML='<div class="card">ย�
   if(tab==='items'){h+='<div class="card"><h3>อุปกรณ์</h3>';
     const slots=['Weapon 1','Weapon 2','Helmet','Body Armour','Gloves','Boots','Amulet','Ring 1','Ring 2','Belt','Flask 1','Flask 2','Flask 3','Flask 4','Flask 5'];
     for(const s of slots){const t=B.items[s];h+=`<div class="slot"><span class="muted" style="width:90px">${s}</span><span class="nm ${t?rarityClass(t):''}" style="flex:1" onclick="this.parentNode.nextElementSibling.classList.toggle('open')">${t?esc(S.items[s]):'<span class=muted>ว่าง</span>'}</span>
-      <span><button onclick="equipUnique('${s}')" title="ใส่ unique">U</button> <button onclick="equipText('${s}')" title="วางข้อความไอเทม">✎</button>${t?` <button onclick="unequip('${s}')">✕</button>`:''}</span></div><div class="item">${esc(t||'')}</div>`}
+      <span><button onclick="equipUnique('${s}')" title="ใส่ unique">U</button> <button onclick="rareBuilder('${s}')" title="สร้าง rare">R</button> <button onclick="equipText('${s}')" title="วางข้อความไอเทม">✎</button>${t?` <button onclick="unequip('${s}')">✕</button>`:''}</span></div><div class="item">${esc(t||'')}</div>`}
     h+='</div><div class="card"><h3>Jewel sockets</h3>';
     for(const [id,nm] of Object.entries(S.jewel_sockets)){const t=B.jewels[id];h+=`<div class="slot"><span class="muted">socket ${id}</span><span class="nm ${t?rarityClass(t):''}" style="flex:1">${t?esc(nm):'<span class=muted>ว่าง</span>'}</span><span><button onclick="equipUnique('${id}')">U</button> <button onclick="equipText('${id}')">✎</button>${t?` <button onclick="unequip('${id}')">✕</button>`:''}</span></div>`}
     if(!Object.keys(S.jewel_sockets).length)h+='<span class="muted">ยังไม่ได้เอา jewel socket บนต้นไม้</span>';h+='</div>'}
-  if(tab==='skills'){for(const g of S.skills){h+=`<div class="card"><h3>${g.main?'★ ':''}${esc(g.label||g.slot||'กลุ่ม '+g.index)}</h3>${g.gems.map(x=>`<span class="tag">${esc(x)}</span>`).join('')}
-      ${g.warnings.map(w=>`<div class="prob">${esc(w)}</div>`).join('')}<div class="row"><button onclick="setMain(${g.index})">ตั้งเป็นหลัก</button><button onclick="rmGroup(${g.index})">ลบ</button></div></div>`}
+  if(tab==='skills'){for(const g of S.skills){const raw=B.skills[g.index-1];h+=`<div class="card"><h3>${g.main?'★ ':''}${esc(g.label||g.slot||'กลุ่ม '+g.index)} <label class="muted" style="float:right"><input type="checkbox" ${raw.enabled!==false?'checked':''} onchange="call('edit_skill_group',{name:cur,group:${g.index},enabled:this.checked}).then(()=>loadBuild(cur))"> เปิดใช้</label></h3>
+      ${raw.gems.map(x=>`<div class="slot"><label style="flex:1"><input type="checkbox" ${x.enabled!==false?'checked':''} onchange="gemSet(${g.index},'${esc(x.name).replace(/'/g,"\\'")}',{enabled:this.checked})"> ${esc(x.name)}</label>
+        <span class="muted">Lv</span><input type="number" value="${x.level}" style="width:54px" onchange="gemSet(${g.index},'${esc(x.name).replace(/'/g,"\\'")}',{level:+this.value})">
+        <span class="muted">Q</span><input type="number" value="${x.quality}" style="width:54px" onchange="gemSet(${g.index},'${esc(x.name).replace(/'/g,"\\'")}',{quality:+this.value})">
+        <button onclick="call('remove_gem',{name:cur,group:${g.index},gem:'${esc(x.name).replace(/'/g,"\\'")}'}).then(()=>loadBuild(cur))">✕</button></div>`).join('')}
+      ${g.warnings.map(w=>`<div class="prob">${esc(w)}</div>`).join('')}<div class="row"><input id="ag${g.index}" placeholder="เพิ่มเจม…" style="flex:1"><button onclick="addGemTo(${g.index})">＋</button><button onclick="suppList(${g.index})" title="support ที่ใช้ได้">?</button><button onclick="setMain(${g.index})">ตั้งเป็นหลัก</button><button onclick="rmGroup(${g.index})">ลบกลุ่ม</button></div></div>`}
     h+=`<div class="card"><h3>เพิ่มกลุ่มเจม</h3><input id="gemIn" style="width:100%" placeholder="Fireball, Spell Echo, Elemental Focus"><div class="row"><select id="gemSlot"><option value="">(ไม่ระบุช่อง)</option>${['Body Armour','Helmet','Gloves','Boots','Weapon 1','Weapon 2'].map(s=>`<option>${s}</option>`).join('')}</select><button class="pri" onclick="addGroup()">เพิ่ม</button></div><div class="muted">คั่นชื่อเจมด้วย ,</div></div>`}
   if(tab==='tree'){h+=`<div class="card"><h3>ค้นหาและเพิ่ม passive</h3><div class="row"><input id="pq" style="flex:1" placeholder="เช่น life leech / Acrobatics"><button onclick="searchPass()">ค้นหา</button></div><div id="pres"></div></div>
     <div class="card"><h3>ต้นไม้</h3><div class="row"><button onclick="centerOn(classStart());draw()">ไปจุดเริ่ม</button><button onclick="if(confirm('ล้าง passive ทั้งหมด?'))call('reset_tree',{name:cur}).then(()=>loadBuild(cur))">ล้างต้นไม้</button></div></div>`}
+  if(tab==='config'){const c=B.config||{};const chk=(v,l)=>`<label class="slot"><span style="flex:1">${l}</span><input type="checkbox" ${c[v]?'checked':''} onchange="setCfg('${v}',this.checked||null)"></label>`;
+    h+=`<div class="card"><h3>ศัตรู</h3><div class="slot"><span style="flex:1">ประเภทบอส</span><select onchange="setCfg('enemyIsBoss',this.value)">${[['None','ไม่ใช่บอส'],['Boss','บอสทั่วไป'],['Pinnacle','Pinnacle (ค่าเริ่มต้น)'],['Uber','Uber']].map(([v,l])=>`<option value="${v}" ${(c.enemyIsBoss||'Pinnacle')===v?'selected':''}>${l}</option>`).join('')}</select></div>
+      ${chk('conditionEnemyShocked','ศัตรูโดน Shock')}${chk('conditionEnemyIgnited','ศัตรูติด Ignite')}${chk('conditionEnemyChilled','ศัตรูโดน Chill')}${chk('conditionEnemyMoving','ศัตรูเคลื่อนที่ (bleed x3)')}${chk('conditionEnemyCursed','ศัตรูโดน curse')}</div>
+      <div class="card"><h3>ตัวเรา</h3>${chk('usePowerCharges','ใช้ Power Charges')}${chk('useFrenzyCharges','ใช้ Frenzy Charges')}${chk('useEnduranceCharges','ใช้ Endurance Charges')}${chk('conditionUsingFlask','เปิด Flask')}${chk('conditionFullLife','Full Life ตลอด')}${chk('conditionLowLife','Low Life')}${chk('conditionKilledRecently','ฆ่าศัตรูเร็วๆ นี้')}${chk('buffOnslaught','มี Onslaught')}${chk('buffFortification','มี Fortify')}</div>
+      <div class="card"><h3>ค้นหาตัวเลือก Config ทั้งหมด (591)</h3><div class="row"><input id="cq" style="flex:1" placeholder="เช่น rage, exposure, wither"><button onclick="srchCfg()">ค้นหา</button></div><div id="cres"></div>
+      ${Object.keys(c).length?`<h3 style="margin-top:8px">ที่ตั้งไว้</h3>${Object.entries(c).map(([k,v])=>`<div class="slot"><span style="flex:1">${esc(k)} = ${esc(String(v))}</span><button onclick="setCfg('${k}',null)">✕</button></div>`).join('')}`:''}</div>`}
   if(tab==='notes'){h+=`<div class="card"><h3>โน้ตบิ้ว</h3><textarea id="notes" style="width:100%;height:300px">${esc(B.notes||'')}</textarea><div class="row"><button class="pri" onclick="saveNotes()">บันทึก</button></div></div>`}
   p.innerHTML=h}
+const impactCache={};let impactTimer=null;
+function queueImpact(n,on){const key=n.id+':'+B.tree.nodes.length;if(impactCache[key]!==undefined)return;clearTimeout(impactTimer);
+  impactTimer=setTimeout(async()=>{try{const r=await call('what_if',on?{name:cur,deallocate:[n.id]}:{name:cur,allocate:[n.id]});
+    const ch=r.changes,pick=['total_dps','life','energy_shield','mana','armour','evasion','fire_res','cold_res','lightning_res'];
+    const txt=pick.filter(k=>ch[k]).map(k=>{const c=ch[k];const col=c.change>0?'#7fc46a':'#e0625a';return `<span style="color:${col}">${k.replace('_',' ')} ${c.change>0?'+':''}${Math.round(c.change)}${c.percent!=null?' ('+(c.percent>0?'+':'')+c.percent+'%)':''}</span>`}).join('<br>');
+    impactCache[key]=txt||'<span class="muted">ไม่เปลี่ยนค่าหลัก</span>';if(hoverNode===n){const el=$('#impact');if(el)el.innerHTML=impactCache[key]}}catch(e){}},250)}
+async function gemSet(g,gem,ch){await call('set_gem',Object.assign({name:cur,group:g,gem},ch));loadBuild(cur)}
+async function addGemTo(g){const v=$('#ag'+g).value.trim();if(!v)return;const r=await call('add_gems',{name:cur,group:g,gems:v.split(',').map(s=>s.trim())});if(r.warnings.length)alert(r.warnings.join('\n'));loadBuild(cur)}
+async function suppList(g){const raw=B.skills[g-1];const act=raw.gems.find(x=>x.enabled!==false);if(!act)return;const r=await call('compatible_supports',{active:act.name});
+  modal(`<h3>Support ที่ใช้กับ ${esc(act.name)} ได้ (${r.supports.length})</h3><input id="sf" placeholder="กรอง…" style="width:100%"><div id="sl"></div><div class="row"><button onclick="closeModal()">ปิด</button></div>`);
+  const draw2=()=>{const q=$('#sf').value.toLowerCase();$('#sl').innerHTML=r.supports.filter(s=>s.toLowerCase().includes(q)).slice(0,120).map(s=>`<button class="opt" data-s="${esc(s)}">${esc(s)}</button>`).join('');
+    $('#sl').querySelectorAll('.opt').forEach(b=>b.onclick=async()=>{await call('add_gems',{name:cur,group:g,gems:[b.dataset.s]});closeModal();loadBuild(cur)})};$('#sf').oninput=draw2;draw2()}
+async function setCfg(k,v){const vals={};vals[k]=v===false?null:v;await call('set_config',{name:cur,values:vals});loadBuild(cur)}
+async function srchCfg(){const r=await call('search_config',{query:$('#cq').value,name:cur,limit:40});
+  $('#cres').innerHTML=r.results.map(o=>`<div class="slot"><span style="flex:1">${esc(o.label)}<br><span class="muted">${esc(o.section||'')} · ${o.var}</span></span>${o.type==='check'?`<input type="checkbox" ${o.current?'checked':''} onchange="setCfg('${o.var}',this.checked||null)">`:o.choices?`<select onchange="setCfg('${o.var}',this.value)"><option></option>${o.choices.map(c=>`<option ${o.current==c?'selected':''}>${esc(c)}</option>`).join('')}</select>`:`<input type="number" style="width:70px" value="${o.current??''}" onchange="setCfg('${o.var}',this.value===''?null:+this.value)">`}</div>`).join('')||'<span class="muted">ไม่พบ</span>'}
+function rareBuilder(slot){modal(`<h3>สร้างไอเทม Rare → ${slot}</h3><div class="row"><input id="rb" placeholder="ชื่อ base เช่น Hubris Circlet" style="flex:1"><button id="rbs">หา base</button></div><div id="rbl"></div>
+  <div id="rmods" style="display:none"><div class="row"><input id="rq" placeholder="กรอง mod เช่น life / resistance" style="flex:1"><select id="ra"><option value="">ทั้งหมด</option><option>Prefix</option><option>Suffix</option></select><button id="rqs">หา mod</button></div><div id="rml" style="max-height:240px;overflow:auto"></div>
+  <h3 style="margin-top:8px">mod ที่เลือก</h3><textarea id="rsel" style="height:110px"></textarea><div class="row"><button class="pri" id="rok">ใส่ไอเทม</button></div></div><div class="row"><button onclick="closeModal()">ปิด</button></div>`);
+  let base=null;$('#rbs').onclick=async()=>{const r=await call('search_bases',{query:$('#rb').value,limit:20});$('#rbl').innerHTML=r.results.map(b=>`<button class="opt" data-b="${esc(b.name)}"><b>${esc(b.name)}</b> <span class="muted">${esc(b.type)} ${b.req&&b.req.level?'Lv'+b.req.level:''} ${esc(b.implicit||'')}</span></button>`).join('')||'ไม่พบ';
+    $('#rbl').querySelectorAll('.opt').forEach(x=>x.onclick=()=>{base=x.dataset.b;$('#rbl').innerHTML='<b>'+esc(base)+'</b>';$('#rmods').style.display='block';$('#rqs').click()})};
+  $('#rqs').onclick=async()=>{const r=await call('search_mods',{base,query:$('#rq').value||null,affix:$('#ra').value||null,limit:120});
+    $('#rml').innerHTML=r.mods.map(m=>`<button class="opt" data-t="${esc(m.text.join('\n'))}"><span class="muted">${m.type} ilvl${m.level}</span> ${esc(m.text.join(' / '))}</button>`).join('');
+    $('#rml').querySelectorAll('.opt').forEach(x=>x.onclick=()=>{$('#rsel').value+=(($('#rsel').value&&!$('#rsel').value.endsWith('\n'))?'\n':'')+x.dataset.t})};
+  $('#rok').onclick=async()=>{const mods=$('#rsel').value.split('\n').map(s=>s.trim()).filter(Boolean);await call('equip_rare',{name:cur,slot,base,mods});closeModal();loadBuild(cur)}}
 async function searchPass(){const r=await call('search_passives',{query:$('#pq').value,limit:40});$('#pres').innerHTML=r.results.map(n=>`<div class="slot"><span style="flex:1"><b>${esc(n.name)}</b> <span class="muted">${n.type}</span><br><span class="muted">${esc(n.stats.join(' · '))}</span></span><span><button onclick="goNode(${n.id})">👁</button> <button onclick="addNode(${n.id})">＋</button></span></div>`).join('')||'<span class="muted">ไม่พบ</span>'}
 function goNode(id){const n=N[id];if(n){view.x=n.x;view.y=n.y;view.z=Math.max(view.z,.3);draw()}}
 async function addNode(id){const n=N[id];if(n&&n.t==='mastery')return pickMastery(n);await call('allocate',{name:cur,nodes:[id]});loadBuild(cur)}
