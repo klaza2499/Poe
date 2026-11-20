@@ -83,6 +83,10 @@ def parse_item(text: str) -> dict:
             else:
                 it["props"].setdefault(k, v) if k != "Variant" else it["props"].setdefault("Variants", []).append(v)
             continue
+        pm = re.match(r"^(\w+BasePercentile|Catalyst Quality|Foulborn|Talisman Tier|Has Variants|Has Alt Variant \w+)\s*:\s*(.*)$", l)
+        if pm:
+            it["props"][pm.group(1)] = pm.group(2)
+            continue
         rm = re.match(r"^Requires Level (\d+)", l)
         if rm:
             it["props"]["Requires Level"] = rm.group(1)

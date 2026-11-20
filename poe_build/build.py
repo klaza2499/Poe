@@ -48,6 +48,7 @@ class Build:
         self.notes = ""
         self.config: dict = {}
         self.loadouts: dict = {}
+        self.active_flasks: list = []
         self.active_loadout = None
 
     # ------------------------------------------------ helpers
@@ -136,6 +137,8 @@ class Build:
         if t and not itemsmod.slot_ok(slot, t):
             raise ValueError(f"a {t} cannot go in {slot}")
         self.items[slot] = text
+        if slot.startswith("Flask") and slot not in self.active_flasks:
+            self.active_flasks.append(slot)
         return slot
 
     def unequip(self, slot):
@@ -163,7 +166,8 @@ class Build:
         self.main_group = min(self.main_group, max(1, len(self.skill_groups)))
 
     # ------------------------------------------------ loadouts (PoB tree/item/skill sets)
-    LOADOUT_KEYS = ("tree", "items", "jewels", "skills", "mainSkill", "level", "ascendancy", "bloodline", "config")
+    LOADOUT_KEYS = ("tree", "items", "jewels", "skills", "mainSkill", "level", "ascendancy", "bloodline", "config",
+                    "activeFlasks")
 
     def _snapshot(self):
         d = self.to_dict()
@@ -182,7 +186,7 @@ class Build:
         merged = {**self.to_dict(), **json.loads(json.dumps(snap))}
         other = Build.from_dict(merged)
         for attr in ("tree_nodes", "masteries", "items", "jewels", "skill_groups", "main_group", "level",
-                     "ascendancy", "bloodline", "config"):
+                     "ascendancy", "bloodline", "config", "active_flasks"):
             setattr(self, attr, getattr(other, attr))
         self.active_loadout = name
 
@@ -196,7 +200,7 @@ class Build:
             "tree": {"nodes": self.tree_nodes, "masteries": {str(k): v for k, v in self.masteries.items()}},
             "items": self.items, "jewels": {str(k): v for k, v in self.jewels.items()},
             "skills": self.skill_groups, "mainSkill": self.main_group, "notes": self.notes, "config": self.config,
-            "loadouts": self.loadouts, "activeLoadout": self.active_loadout,
+            "loadouts": self.loadouts, "activeLoadout": self.active_loadout, "activeFlasks": self.active_flasks,
         }
 
     @classmethod
@@ -216,6 +220,7 @@ class Build:
         b.notes = d.get("notes", "")
         b.config = d.get("config", {})
         b.loadouts = d.get("loadouts", {})
+        b.active_flasks = list(d.get("activeFlasks", [s for s in b.items if s.startswith("Flask")]))
         b.active_loadout = d.get("activeLoadout")
         return b
 
@@ -343,7 +348,10 @@ class Build:
             ET.SubElement(socks, "Socket", {"nodeId": str(nid), "itemId": str(item_id)})
         iset = ET.SubElement(it_el, "ItemSet", {"id": "1", "useSecondWeaponSet": "false"})
         for slot, iid in slot_ids.items():
-            ET.SubElement(iset, "Slot", {"name": slot, "itemId": str(iid)})
+            attrs = {"name": slot, "itemId": str(iid)}
+            if slot.startswith("Flask") and slot in self.active_flasks:
+                attrs["active"] = "true"
+            ET.SubElement(iset, "Slot", attrs)
         n = ET.SubElement(root, "Notes")
         n.text = self.notes or ""
         cfg = ET.SubElement(root, "Config")
@@ -419,6 +427,8 @@ class Build:
                         nm = sl.get("name")
                         if nm in itemsmod.SLOTS:
                             b.items[nm] = _clean_item(items[iid])
+                            if nm.startswith("Flask") and sl.get("active") == "true":
+                                b.active_flasks.append(nm)
             for iid, nid in sock_map.items():
                 if iid in items:
                     b.jewels[nid] = _clean_item(items[iid])

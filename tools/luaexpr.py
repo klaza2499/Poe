@@ -21,7 +21,12 @@ KEYWORDFLAG: dict[str, int] = {}
 def load_flags(global_lua: str):
     for m in re.finditer(r"^(ModFlag|KeywordFlag)\.(\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)", global_lua, re.M):
         (MODFLAG if m.group(1) == "ModFlag" else KEYWORDFLAG)[m.group(2)] = int(m.group(3), 0)
-    return {"ModFlag": dict(MODFLAG), "KeywordFlag": dict(KEYWORDFLAG)}
+    st = {}
+    m = re.search(r"^SkillType = \{(.*?)^\}", global_lua, re.M | re.S)
+    if m:
+        for mm in re.finditer(r"^\s*(\w+)\s*=\s*(\d+)", m.group(1), re.M):
+            st[mm.group(1)] = int(mm.group(2))
+    return {"ModFlag": dict(MODFLAG), "KeywordFlag": dict(KEYWORDFLAG), "SkillType": st}
 
 
 class Unknown(dict):

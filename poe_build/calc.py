@@ -41,6 +41,18 @@ def config_options():
     return opts
 
 
+@functools.lru_cache(maxsize=None)
+def _skill_type_names():
+    return {v: k for k, v in consts()["flags"].get("SkillType", {}).items()}
+
+
+def skill_type_name(x):
+    """PoB's ModCache stores SkillType as numbers; skill data uses names."""
+    if isinstance(x, (int, float)) and not isinstance(x, bool):
+        return _skill_type_names().get(int(x), x)
+    return x
+
+
 def MF(name):
     return consts()["flags"]["ModFlag"].get(name, 0)
 
@@ -273,7 +285,7 @@ class ModDB:
             elif tt == "SkillType":
                 st = cfg.get("skillTypes") or set()
                 lst = t.get("skillTypeList") or [t.get("skillType")]
-                match = any(x in st for x in lst)
+                match = any(skill_type_name(x) in st for x in lst)
                 if t.get("neg"):
                     match = not match
                 if not match:
@@ -297,6 +309,9 @@ class ModDB:
             elif tt == "KeywordFlagAnd":
                 kf = t.get("keywordFlags") or 0
                 if (cfg.get("kw", 0) & kf) != kf:
+                    return None
+            elif tt == "ItemCondition":
+                if not self._item_condition(t, cfg):
                     return None
             elif tt in ("Global", "GlobalEffect", "IgnoreCond", "InSlot", "SlotNumber"):
                 pass
@@ -322,6 +337,36 @@ class ModDB:
                 # ItemCondition, MonsterTag, DisablesItem, ... not modelled
                 return None
         return value
+
+    def _item_condition(self, t, cfg):
+        """PoB ItemCondition tag (e.g. 'if there are no Life Modifiers on Equipped Body Armour')."""
+        item_list = getattr(self.actor, "items", None) or {}
+        slot = " ".join(w.capitalize() for w in (t.get("itemSlot") or "").strip().split())
+        if t.get("allSlots"):
+            items = dict(item_list)
+        elif t.get("bothSlots"):
+            a, b = item_list.get(slot + " 1"), item_list.get(slot + " 2")
+            items = {slot + " 1": a, slot + " 2": b} if a and b else {}
+        else:
+            items = {slot: item_list[slot]} if slot in item_list else {}
+        matches = []
+        for sl, it in items.items():
+            lines = [x.lower() for x in itemsmod.active_mod_lines(it)]
+            if t.get("searchCond"):
+                if not (t.get("excludeSelf") and sl == slot):
+                    matches.append(any(t["searchCond"].lower() in x for x in lines))
+            if t.get("rarityCond"):
+                matches.append(it["rarity"] == t["rarityCond"])
+            if t.get("corruptedCond") is not None:
+                matches.append(("Corrupted" in it.get("flags", [])) == t["corruptedCond"])
+            if t.get("nameCond"):
+                matches.append(f"{it['name']}, {it['base']}".lower() == t["nameCond"].lower())
+        neg = bool(t.get("neg"))
+        if any(m == neg for m in matches):
+            return False
+        if not items and not neg:
+            return False
+        return True
 
     # -- aggregation ----------------------------------------------------
     def _matching(self, typ, cfg, names):
@@ -526,6 +571,14 @@ def parse_item_mods(text, slot):
             quality = float("".join(c for c in q if c.isdigit() or c == ".") or 0)
         except ValueError:
             quality = 0
+    if any(m["name"] == "AlternateQualityArmour" for m in mods) and base.get("armour"):
+        quality_def = 0
+    else:
+        quality_def = quality
+    mods = [m for m in mods if m["name"] != "AlternateQualityArmour"]
+    if quality:
+        mods.append({"name": "Multiplier:QualityOn" + slot, "type": "BASE", "value": quality, "flags": 0, "kw": 0,
+                     "source": "Quality"})
     rest = []
     weapon = armour = None
     if base.get("weapon"):
@@ -572,10 +625,17 @@ def parse_item_mods(text, slot):
                 ("Evasion", ("Evasion", "ArmourAndEvasion", "EvasionAndEnergyShield"), ("Evasion", "ArmourAndEvasion", "EvasionAndEnergyShield")),
                 ("EnergyShield", ("EnergyShield", "ArmourAndEnergyShield", "EvasionAndEnergyShield"), ("EnergyShield", "ArmourAndEnergyShield", "EvasionAndEnergyShield")),
                 ("Ward", ("Ward",), ("Ward",))):
-            bmax = a.get(key + "BaseMax", a.get(key + "BaseMin", 0)) or 0
+            bmin = a.get(key + "BaseMin", 0) or 0
+            bmax = a.get(key + "BaseMax", bmin) or 0
+            pct = it["props"].get(key + "BasePercentile")
+            try:
+                pct = float(pct) if pct is not None else 1.0
+            except ValueError:
+                pct = 1.0
+            bmax = round(bmin + (bmax - bmin) * pct)
             b = bmax + sum(L(n, "BASE") for n in base_names)
             inc = sum(L(n, "INC") for n in inc_names) + dinc
-            armour[key] = rnd(b * (1 + inc / 100) * (1 + quality / 100)) if b else 0
+            armour[key] = rnd(b * (1 + inc / 100) * (1 + quality_def / 100)) if b else 0
         if a.get("BlockChance"):
             armour["BlockChance"] = a["BlockChance"] + sum(m["value"] for m in mods if m["name"] == "BlockChance"
                                                             and m["type"] == "BASE" and _is_local(m))
@@ -774,11 +834,6 @@ class Calculator:
                     self.unparsed.append(("tree", data.nodes()[nid]["name"], sub))
                 else:
                     db.add_list(r, "Tree:" + data.nodes()[nid]["name"])
-        for nid in spec.alloc:
-            n = data.nodes()[nid]
-            for attr, key in (("Str", "grantedStr"), ("Dex", "grantedDex"), ("Int", "grantedInt")):
-                if n.get(key):
-                    db.new(attr, "BASE", n[key], "Tree")
         db.multipliers["AllocatedNotable"] = sum(1 for n in spec.alloc if data.nodes()[n]["type"] == "notable")
         db.multipliers["AllocatedMastery"] = len(spec.masteries)
         db.multipliers["AllocatedLifeMastery"] = sum(1 for n in spec.masteries if data.nodes()[n]["name"] == "Life Mastery")
@@ -787,18 +842,21 @@ class Calculator:
         self.armour_local = {"Armour": 0, "Evasion": 0, "EnergyShield": 0, "Ward": 0}
         self.shield_block = 0
         self.item_list = {}
-        use_flasks = bool(self.cfg_in.get("conditionUsingFlask") or self.cfg_in.get("useFlasks"))
+        use_flasks = bool(self.cfg_in.get("useFlasks"))
+        flasks = []
         for slot, text in b.items.items():
             if "Swap" in slot:
                 continue
             it, base, mods, weapon, armour, unp = parse_item_mods(text, slot)
             self.item_list[slot] = (it, base)
+            self.player.items = getattr(self.player, "items", {})
+            self.player.items[slot] = it
             for u in unp:
                 self.unparsed.append(("item", slot, u))
             if base.get("type") == "Flask":
-                if not use_flasks:
-                    continue
-                db.conditions["UsingFlask"] = True
+                if use_flasks or slot in (getattr(b, "active_flasks", None) or []):
+                    flasks.append((slot, it, base, mods))
+                continue
             if weapon:
                 self.weapons[slot] = weapon
             if armour:
@@ -815,6 +873,7 @@ class Calculator:
                             ok = False
                 if ok:
                     db.add(m, "Item:" + slot)
+        self._flasks = flasks
         for nid, text in b.jewels.items():
             if nid not in spec.alloc:
                 continue
@@ -825,6 +884,20 @@ class Calculator:
             for u in unp:
                 self.unparsed.append(("jewel", str(nid), u))
             db.add_list(mods, "Jewel")
+        # keystones granted by items / jewels ("Avatar of Fire", "Conduit" ...) -> apply the keystone node's stats
+        tree_keys = {data.nodes()[n]["name"] for n in spec.alloc if data.nodes()[n]["type"] == "keystone"}
+        for ks in set(v for v in db.list(None, "Keystone") if isinstance(v, str)) - tree_keys:
+            node = next((n for n in data.nodes().values() if n["type"] == "keystone" and n["name"] == ks), None)
+            if not node:
+                self.unparsed.append(("keystone", ks, "keystone not found in tree data"))
+                continue
+            for st in node.get("stats", []):
+                r = modparse.parse_line(st.replace("\n", " "))
+                if r is None:
+                    self.unparsed.append(("keystone", ks, st))
+                else:
+                    db.add_list(r, "Keystone:" + ks)
+        self.apply_flasks()
         # weapon conditions
         w1, w2 = self.weapons.get("Weapon 1"), self.weapons.get("Weapon 2")
         it2 = self.item_list.get("Weapon 2")
@@ -851,9 +924,49 @@ class Calculator:
         for k, v in self.armour_local.items():
             if v:
                 db.new(k, "BASE", v, "Item local")
-        if self.shield_block:
-            db.new("BlockChance", "BASE", self.shield_block, "Shield")
         db.multipliers["Level"] = level
+
+    # -------------------------------------------------------------- flasks
+    def apply_flasks(self):
+        """Active flasks: base buff + 'during Effect' mods, scaled by flask effect (PoB mergeFlasks)."""
+        db = self.player.moddb
+        if not self._flasks:
+            return
+        db.conditions["UsingFlask"] = True
+        inc_all = db.sum("INC", {"actor": "player"}, "FlaskEffect")
+        inc_magic = db.sum("INC", {"actor": "player"}, "MagicUtilityFlaskEffect")
+        type_inc = {"Iron Flask": "IronFlaskEffect", "Granite Flask": "GraniteFlaskEffect", "Ruby Flask": "RubyFlaskEffect",
+                    "Sapphire Flask": "SapphireFlaskEffect", "Topaz Flask": "TopazFlaskEffect"}
+        seen_bases = set()
+        for slot, it, base, mods in self._flasks:
+            fl = base.get("flask") or {}
+            utility = not (fl.get("life") or fl.get("mana"))
+            local = sum(m["value"] for m in mods if m["name"] == "LocalEffect" and m["type"] == "INC")
+            inc = inc_all + local
+            if it["base"] in type_inc:
+                inc += db.sum("INC", {"actor": "player"}, type_inc[it["base"]])
+            if it["rarity"] == "MAGIC" and utility:
+                inc += inc_magic
+            eff = 1 + inc / 100
+            buff = []
+            if it["base"] not in seen_bases:  # the same flask base's buff doesn't stack
+                for line in fl.get("buff") or []:
+                    r = modparse.parse_line(line)
+                    if r:
+                        buff += r
+                seen_bases.add(it["base"])
+            for m in mods:
+                tags = m.get("tags") or []
+                if any(t.get("type") == "Condition" and t.get("var") == "UsingFlask" for t in tags):
+                    buff.append(dict(m, tags=[t for t in tags if not (t.get("type") == "Condition" and t.get("var") == "UsingFlask")]))
+            for m in buff:
+                v = m.get("value")
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    v = v * eff
+                    if m["type"] in ("BASE", "INC") and m["name"] not in ("LifeRegenPercent", "ManaRegenPercent"):
+                        v = math.floor(v)
+                db.add(dict(m, value=v), f"Flask:{slot}")
+            db.conditions["Using" + it["base"].replace(" ", "")] = True
 
     # -------------------------------------------------------------- cluster jewels
     def apply_cluster_jewel(self, text, nid):
@@ -1112,6 +1225,36 @@ class Calculator:
                 "skillDist": self.cfg_in.get("projectileDistance"),
                 "skillCond": {}}
 
+    def _reserve(self, sk, cfg, reserved):
+        sdb, sd = sk["db"], sk["data"]
+        mult = math.floor(sk["manaMult"] / 100 * 10000) / 10000
+        pools = {"Mana": [sd.get("manaReservationFlat") or 0, sd.get("manaReservationPercent") or 0],
+                 "Life": [sd.get("lifeReservationFlat") or 0, sd.get("lifeReservationPercent") or 0]}
+        if sdb.flag(cfg, "BloodMagicReserved"):
+            pools["Life"] = [pools["Life"][0] + pools["Mana"][0], pools["Life"][1] + pools["Mana"][1]]
+            pools["Mana"] = [0, 0]
+        for name, (bflat, bpct) in pools.items():
+            if not (bflat or bpct):
+                continue
+            rmore = sdb.more(cfg, name + "Reserved")
+            gmore = sdb.more(cfg, "Reserved")
+            inc = sdb.sum("INC", cfg, name + "Reserved", "Reserved")
+            eff = max(sdb.sum("INC", cfg, name + "ReservationEfficiency", "ReservationEfficiency"), -100)
+            effm = sdb.more(cfg, name + "ReservationEfficiency", "ReservationEfficiency")
+
+            def stage(v):
+                v = v + math.trunc(v * inc / 100)
+                v = v + math.trunc(v * (rmore - 1))
+                return v + math.trunc(v * (gmore - 1))
+            if bflat:
+                bv = math.trunc(bflat * mult)
+                if bv:
+                    reserved[name] += max(rnd(stage(bv) / (1 + eff / 100) / effm), 0)
+            if bpct:
+                bv = math.trunc(bpct * 100 * mult)
+                if bv:
+                    reserved[name + "Percent"] += max(rnd(stage(bv) / (1 + eff / 100) / effm) / 100, 0)
+
     # -------------------------------------------------------------- triggers
     def trigger_rate(self, skill, sdb, cfg):
         """Approximate PoB trigger maths: min(source rate, 1 / adjusted cooldown) shared between triggered spells."""
@@ -1180,10 +1323,10 @@ class Calculator:
         curses = []
         self.buffs = []
         self.ally_buffs = []
-        reserved = {"Mana": 0.0, "Life": 0.0, "ManaPercent": 0.0, "LifePercent": 0.0}
+        reserved = {"Mana": 0, "Life": 0, "ManaPercent": 0.0, "LifePercent": 0.0}
         for gi, grp in enumerate(b.skill_groups, 1):
-            if not grp.get("enabled", True):
-                continue
+            if not grp.get("enabled", True) or "Swap" in (grp.get("slot") or ""):
+                continue  # PoB: gems in the inactive weapon set do nothing
             for i, g in enumerate(grp.get("gems", [])):
                 if not g.get("enabled", True):
                     continue
@@ -1194,17 +1337,8 @@ class Calculator:
                 if not sk:
                     continue
                 cfg = self._cfg(sk, "buff")
-                # reservation
-                rp = sk["data"].get("manaReservationPercent")
-                rf = sk["data"].get("manaReservationFlat")
-                if rp or rf:
-                    eff = sk["db"].sum("INC", cfg, "ReservationEfficiency", "ManaReservationEfficiency")
-                    more = sk["db"].more(cfg, "Reserved", "ManaReserved")
-                    mult = sk["manaMult"] / 100 * more / (1 + eff / 100)
-                    if rp:
-                        reserved["ManaPercent"] += rnd(rp * mult, 2) if not sk["db"].flag(cfg, "BloodMagicReserved") else 0
-                    if rf:
-                        reserved["Mana"] += math.ceil(rf * mult)
+                # reservation (PoB CalcPerform, integer stages)
+                self._reserve(sk, cfg, reserved)
                 if sk is main_skill and not sk["globalMods"]:
                     continue
                 if not sk["globalMods"]:
@@ -1237,10 +1371,8 @@ class Calculator:
         self.curses = []
         for sk in curses[:max(limit, 0)]:
             cfg = self._cfg(sk, "buff")
-            inc = sk["db"].sum("INC", cfg, "CurseEffect")
-            mult = (1 + inc / 100) * sk["db"].more(cfg, "CurseEffect")
-            if self.bd["boss"] in ("Pinnacle", "Uber"):
-                mult *= 0.66 if self.bd["boss"] == "Pinnacle" else 0.33  # boss curse effectiveness
+            inc = sk["db"].sum("INC", cfg, "CurseEffect") + edb.sum("INC", None, "CurseEffectOnSelf")
+            mult = (1 + inc / 100) * sk["db"].more(cfg, "CurseEffect") * edb.more(None, "CurseEffectOnSelf")
             for m in sk["globalMods"]:
                 nm = dict(m)
                 nm["tags"] = [t for t in m.get("tags", []) if t.get("type") != "GlobalEffect"]
@@ -1254,11 +1386,25 @@ class Calculator:
         for v in db.list(None, "EnemyModifier"):
             if isinstance(v, dict) and isinstance(v.get("mod"), dict):
                 edb.add(norm_mod(v["mod"], "EnemyModifier"))
+        # exposure: only the strongest applies (PoB CalcPerform)
+        for el in ("Fire", "Cold", "Lightning"):
+            vals = [r["value"] for r in edb.tabulate("BASE", None, el + "Exposure")]
+            if not vals:
+                continue
+            v = min(vals) + db.sum("BASE", None, "ExtraExposure", "Extra" + el + "Exposure")
+            inc = db.sum("INC", None, "ExposureEffect", el + "ExposureEffect")
+            v *= 1 + inc / 100
+            edb.conditions["Has" + el + "Exposure"] = True
+            edb.new(el + "Resist", "BASE", v, "~Exposure")
+            db.conditions["AppliedExposureRecently"] = True
 
     # -------------------------------------------------------------- defence
     def calc_defence(self):
         db = self.player.moddb
         out = self.player.output
+        # drop mods derived by a previous pass (attribute bonuses, resist conversions, ...)
+        for name in list(db.mods):
+            db.mods[name] = [m for m in db.mods[name] if not str(m.get("source", "")).startswith("~")]
         # charges
         for ch in ("Power", "Frenzy", "Endurance"):
             mx = db.sum("BASE", None, ch + "ChargesMax")
@@ -1277,15 +1423,25 @@ class Calculator:
                 out[st] = math.floor(base * (1 + inc / 100) * db.more(None, st, "AllAttributes"))
             out["LowestAttribute"] = min(out["Str"], out["Dex"], out["Int"])
         s, d, i = out["Str"], out["Dex"], out["Int"]
-        if not db.flag(None, "NoStrBonusToLife"):
-            db.new("Life", "BASE", math.floor(s / 2), "Strength")
-        db.new("PhysicalDamage", "INC", math.floor(s / 5), "Strength", MF("Melee"))
-        db.new("Accuracy", "BASE", d * 2, "Dexterity")
-        if not db.flag(None, "NoDexBonusToEvasion"):
-            db.new("Evasion", "INC", math.floor(d / 5), "Dexterity")
-        db.new("Mana", "BASE", math.floor(i / 2), "Intelligence")
-        if not db.flag(None, "NoIntBonusToES"):
-            db.new("EnergyShield", "INC", math.floor(i / 5), "Intelligence")
+        # attribute bonuses (PoB CalcPerform)
+        if not db.flag(None, "NoAttributeBonuses"):
+            if not db.flag(None, "NoStrengthAttributeBonuses"):
+                if not db.flag(None, "NoStrBonusToLife"):
+                    db.new("Life", "BASE", math.floor(s / 2), "~Strength")
+                ratio = db.sum("BASE", None, "StrDmgBonusRatioOverride")
+                extra = db.sum("BASE", None, "DexIntToMeleeBonus")
+                bonus = math.floor((s + extra) * ratio) if ratio > 0 else math.floor((s + extra) / 5)
+                db.new("PhysicalDamage", "INC", bonus, "~Strength", MF("Melee"))
+            if not db.flag(None, "NoDexterityAttributeBonuses"):
+                acc = db.override(None, "DexAccBonusOverride")
+                db.new("Accuracy", "BASE", d * (acc if acc is not None else 2), "~Dexterity")
+                if not db.flag(None, "NoDexBonusToEvasion"):
+                    db.new("Evasion", "INC", math.floor(d / 5), "~Dexterity")
+            if not db.flag(None, "NoIntelligenceAttributeBonuses"):
+                if not db.flag(None, "NoIntBonusToMana"):
+                    db.new("Mana", "BASE", math.floor(i / 2), "~Intelligence")
+                if not db.flag(None, "NoIntBonusToES"):
+                    db.new("EnergyShield", "INC", math.floor(i / 10), "~Intelligence")
         # pools
         ci = db.flag(None, "ChaosInoculation")
         life = db.sum("BASE", None, "Life") * (1 + db.sum("INC", None, "Life") / 100) * db.more(None, "Life")
@@ -1304,6 +1460,14 @@ class Calculator:
         gain = db.sum("BASE", None, "ManaGainAsEnergyShield")
         if gain:
             out["EnergyShield"] += rnd(out["Mana"] * gain / 100)
+        self.calc_resists_block(ci)
+        # PoB: armour/evasion increased by fire/cold resistance (Chieftain, etc.)
+        for flag, name, key in (("ArmourIncreasedByUncappedFireRes", "Armour", "FireResistTotal"),
+                                ("ArmourIncreasedByOvercappedFireRes", "Armour", "FireResistOverCap"),
+                                ("EvasionRatingIncreasedByUncappedColdRes", "Evasion", "ColdResistTotal"),
+                                ("EvasionRatingIncreasedByOvercappedColdRes", "Evasion", "ColdResistOverCap")):
+            if db.flag(None, flag):
+                db.new(name, "INC", out[key], "~" + flag)
         arm_inc = db.sum("INC", None, "Armour", "ArmourAndEvasion", "ArmourAndEnergyShield", "Defences")
         out["Armour"] = max(0, rnd(db.sum("BASE", None, "Armour", "ArmourAndEvasion") * (1 + arm_inc / 100) * db.more(None, "Armour", "Defences")))
         eva_inc = db.sum("INC", None, "Evasion", "ArmourAndEvasion", "EvasionAndEnergyShield", "Defences")
@@ -1315,32 +1479,12 @@ class Calculator:
         out["Ward"] = max(0, rnd(db.sum("BASE", None, "Ward") * (1 + db.sum("INC", None, "Ward", "Defences") / 100) * db.more(None, "Ward")))
         # reservation
         r = getattr(self, "reserved", {"ManaPercent": 0, "Mana": 0})
-        out["ManaReservedPercent"] = rnd(r["ManaPercent"], 1)
-        out["ManaReserved"] = rnd(out["Mana"] * r["ManaPercent"] / 100 + r["Mana"])
-        out["ManaUnreserved"] = out["Mana"] - out["ManaReserved"]
-        out["LifeReserved"] = rnd(out["Life"] * r.get("LifePercent", 0) / 100 + r.get("Life", 0))
-        out["LifeUnreserved"] = out["Life"] - out["LifeReserved"]
-        # resistances
-        for el in ("Fire", "Cold", "Lightning", "Chaos"):
-            names = [el + "Resist"] + (["ElementalResist"] if el != "Chaos" else [])
-            maxn = [el + "ResistMax"] + (["ElementalResistMax"] if el != "Chaos" else [])
-            total = db.sum("BASE", None, *names) * db.more(None, *names)
-            mx = min(db.sum("BASE", None, *maxn), 90)
-            ov = db.override(None, el + "Resist")
-            if el == "Chaos" and ci:
-                total = 100
-            if ov is not None:
-                total = ov
-            out[el + "ResistTotal"] = rnd(total)
-            out[el + "ResistMax"] = mx
-            out[el + "Resist"] = min(rnd(total), mx)
-            out[el + "ResistOverCap"] = max(0, rnd(total) - mx)
-        # block / suppression / dodge
-        out["BlockChance"] = min(db.sum("BASE", None, "BlockChance") * (1 + db.sum("INC", None, "BlockChance") / 100),
-                                 db.sum("BASE", None, "BlockChanceMax"))
-        out["SpellBlockChance"] = min(db.sum("BASE", None, "SpellBlockChance") * (1 + db.sum("INC", None, "SpellBlockChance") / 100)
-                                      + out["BlockChance"] * db.sum("BASE", None, "BlockChanceConv") / 100,
-                                      db.sum("BASE", None, "SpellBlockChanceMax"))
+        for pool in ("Mana", "Life"):
+            mx = out[pool]
+            res = min(mx, r.get(pool, 0) + math.ceil(mx * r.get(pool + "Percent", 0) / 100))
+            out[pool + "Reserved"] = res
+            out[pool + "ReservedPercent"] = rnd(res / mx * 100, 1) if mx else 0
+            out[pool + "Unreserved"] = mx - res
         out["SpellSuppressionChance"] = min(db.sum("BASE", None, "SpellSuppressionChance") * (1 + db.sum("INC", None, "SpellSuppressionChance") / 100), 100)
         out["SpellSuppressionEffect"] = 40 + db.sum("BASE", None, "SpellSuppressionEffect")
         # regen / recharge
@@ -1420,6 +1564,70 @@ class Calculator:
             out[el + "MaximumHitTaken"] = rnd(raw / enemy_mult) if enemy_mult > 0 else float("inf")
         pool = life + es
         out["TotalEHPPool"] = pool
+
+    def calc_resists_block(self, ci=False):
+        """PoB calcs.resistances + block (CalcDefence.lua)."""
+        db, out = self.player.moddb, self.player.output
+        types = ("Fire", "Cold", "Lightning", "Chaos")
+        # resistance / max resistance conversion (e.g. "Fire Resistance also applies to Cold")
+        for kind, suffix in (("MaxResConvertTo", "ResistMax"), ("ResConvertTo", "Resist")):
+            for src in types:
+                for dst in types:
+                    rate = db.sum("BASE", None, f"{src}{kind}{dst}") / 100
+                    if not rate:
+                        continue
+                    v = sum(r["value"] for r in db.tabulate("BASE", None, src + suffix)
+                            if r["source"] != "Base" and not str(r["source"]).startswith("~"))
+                    if v:
+                        db.new(dst + suffix, "BASE", v * rate, f"~{src} to {dst} conversion")
+                    if suffix == "Resist":
+                        for r in db.tabulate("INC", None, src + "Resist"):
+                            if not str(r["source"]).startswith("~"):
+                                db.new(dst + "Resist", "INC", r["value"] * rate, "~" + str(r["source"]))
+        if db.flag(None, "ElementalResistMaxIsHighestResistMax"):
+            hi = max(min(90, db.sum("BASE", None, e + "ResistMax", "ElementalResistMax")) for e in ("Fire", "Cold", "Lightning"))
+            for e in ("Fire", "Cold", "Lightning"):
+                db.new(e + "ResistMax", "OVERRIDE", hi, "Melding of the Flesh")
+        for el in types:
+            ele = el != "Chaos"
+            names = [el + "Resist"] + (["ElementalResist"] if ele else [])
+            mx = db.override(None, el + "ResistMax")
+            if mx is None:
+                mx = min(90, db.sum("BASE", None, el + "ResistMax", *(["ElementalResistMax"] if ele else [])))
+            total = db.override(None, el + "Resist")
+            if total is None:
+                base = db.sum("BASE", None, *names)
+                inc = max((1 + db.sum("INC", None, *names) / 100) * db.more(None, *names), 0)
+                total = base * inc
+            if el == "Chaos" and ci:
+                total = 100
+            total = math.trunc(total)
+            mx = math.trunc(mx)
+            out[el + "ResistTotal"] = total
+            out[el + "ResistMax"] = mx
+            out[el + "Resist"] = max(min(total, mx), -200)
+            out[el + "ResistOverCap"] = max(0, total - mx)
+            out[el + "ResistOver75"] = max(0, out[el + "Resist"] - 75)
+        # block
+        bmax = min(db.sum("BASE", None, "BlockChanceMax"), 90)
+        inc = db.sum("INC", None, "BlockChance")
+        more = db.more(None, "BlockChance")
+        if db.flag(None, "MaxBlockIfNotBlockedRecently"):
+            out["BlockChance"] = bmax
+        else:
+            tot = rnd((getattr(self, "shield_block", 0) + db.sum("BASE", None, "BlockChance")) * (1 + inc / 100) * more)
+            out["BlockChance"] = min(tot, bmax)
+        smax = bmax if db.flag(None, "SpellBlockChanceMaxIsBlockChanceMax") else min(db.sum("BASE", None, "SpellBlockChanceMax"), 90)
+        if db.flag(None, "MaxSpellBlockIfNotBlockedRecently"):
+            out["SpellBlockChance"] = smax
+        elif db.flag(None, "SpellBlockChanceIsBlockChance"):
+            out["SpellBlockChance"] = out["BlockChance"]
+        else:
+            out["SpellBlockChance"] = min(rnd(db.sum("BASE", None, "SpellBlockChance") * (1 + inc / 100) * more), smax)
+        if db.flag(None, "CannotBlockAttacks"):
+            out["BlockChance"] = 0
+        if db.flag(None, "CannotBlockSpells"):
+            out["SpellBlockChance"] = 0
 
     # -------------------------------------------------------------- offence
     def _conversion(self, sdb, cfg):
@@ -1505,8 +1713,15 @@ class Calculator:
             res = 0
         else:
             names = [dtype + "Resist"] + (["ElementalResist"] if dtype in ELEMENTAL else [])
-            res = edb.sum("BASE", None, *names)
-            res = min(res, 75 + edb.sum("BASE", None, dtype + "ResistMax"))
+            ov = edb.override(None, dtype + "Resist")
+            if ov is not None:
+                res = ov
+            else:
+                res = edb.sum("BASE", None, *names) * max((1 + edb.sum("INC", None, *names) / 100) * edb.more(None, *names), 0)
+            emax = edb.override(None, dtype + "ResistMax")
+            if emax is None:
+                emax = min(90, 75 + edb.sum("BASE", None, dtype + "ResistMax") + (edb.sum("BASE", None, "ElementalResistMax") if dtype in ELEMENTAL else 0))
+            res = max(min(res, emax), -200)
             if sdb.flag(cfg, "Ignore" + dtype + "Resistance") or (dtype in ELEMENTAL and sdb.flag(cfg, "IgnoreElementalResistances")):
                 res = 0
         pen = 0
@@ -1622,7 +1837,10 @@ class Calculator:
                 if ov is not None:
                     crit = ov
                 else:
-                    crit = (base_crit + sdb.sum("BASE", cfg, "CritChance")) * (1 + sdb.sum("INC", cfg, "CritChance") / 100) * sdb.more(cfg, "CritChance")
+                    edb = self.enemy.moddb
+                    crit = ((base_crit + sdb.sum("BASE", cfg, "CritChance") + edb.sum("BASE", None, "SelfCritChance"))
+                            * (1 + (sdb.sum("INC", cfg, "CritChance") + edb.sum("INC", None, "SelfCritChance")) / 100)
+                            * sdb.more(cfg, "CritChance") * edb.more(None, "SelfCritChance"))
                 crit = min(max(crit, 0), 100)
                 if sdb.flag(cfg, "SpellSkillsAlwaysCrit") and "spell" in fl:
                     crit = 100
@@ -1820,15 +2038,12 @@ class Calculator:
                      "enabled": True, "_gd": {"name": "Default Attack", "skillId": "Melee", "support": False,
                                               "tagList": ["attack", "melee"], "req": {}}}]}, 0)
         # first pass: defence (attributes needed by PerStat in skills)
-        self.reserved = {"ManaPercent": 0, "Mana": 0}
+        self.reserved = {"Mana": 0, "Life": 0, "ManaPercent": 0.0, "LifePercent": 0.0}
         self.calc_defence()
         self.apply_buffs(None)
         # recompute defence with buffs applied
         self.player.output = {}
         db = self.player.moddb
-        # remove attribute-derived mods added by previous pass
-        for name in ("Life", "PhysicalDamage", "Accuracy", "Evasion", "Mana", "EnergyShield"):
-            db.mods[name] = [m for m in db.mods[name] if m.get("source") not in ("Strength", "Dexterity", "Intelligence")]
         self.calc_defence()
         skill = self.build_skill(main[0], main[1]) if main else None
         off = self.calc_offence(skill) if skill else {"note": "no main skill selected"}
